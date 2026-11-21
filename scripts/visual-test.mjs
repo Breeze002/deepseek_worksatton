@@ -90,6 +90,9 @@ if (cardCss === undefined || !cardCss.includes('dsc-card-cursor')) {
   process.exit(1);
 }
 
+// The plugin's own rule sheet (plain data, no React) for the member-list cover.
+const { CSS: panelRules } = await import(new URL('../src/client/styles.js', import.meta.url).href);
+
 const optionRow = (label, index) => `<div class="${prefix}_optionRow" data-option-row="${index}">
   <button type="button" class="${prefix}_option" role="radio" aria-checked="false" id="option-${index}">${label}</button>
 </div>`;
@@ -107,6 +110,54 @@ ${optionRow('second option', 1)}
 ${optionRow('third option', 2)}
 </div></div></div>
 </body></html>`;
+
+const panelHtml = `<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;background:#1b1b1f;color:#eee;font:14px system-ui}
+</style><style>${panelRules}</style></head>
+<body>
+<div class="dsc-member-panel" style="position:static;width:240px;height:220px">
+  <div class="dsc-mp-head"><span class="dsc-mp-title">group one</span><button type="button" class="dsc-mp-switch">Sessions</button></div>
+  <div class="dsc-mp-list">
+    <div class="dsc-row">
+      <button type="button" class="dsc-row-main">
+        <span class="dsc-avatar" aria-hidden="true">A</span>
+        <span class="dsc-row-text">
+          <span class="dsc-row-top"><span class="dsc-row-alias">alpha-with-a-long-alias</span><span class="dsc-row-status">Running</span><span class="dsc-row-key">Alt+1</span></span>
+          <span class="dsc-row-sub">a rather long session title that should stay readable</span>
+        </span>
+      </button>
+      <span class="dsc-badge is-running"><span class="dsc-dot"></span></span>
+      <span class="dsc-row-actions">
+        <button type="button" class="dsc-icon-btn" title="Move up">u</button>
+        <button type="button" class="dsc-icon-btn" title="Move down">d</button>
+        <button type="button" class="dsc-icon-btn" title="Open">o</button>
+        <button type="button" class="dsc-icon-btn" title="Remove">x</button>
+      </span>
+    </div>
+  </div>
+</div>
+</body></html>`;
+
+// The reading memory, inlined (it is plain ESM with no React) and driven in a real scroller.
+const readingSource = readFileSync(resolve(root, 'src/client/reading.js'), 'utf8')
+  .replace(/^import .*$/gmu, '') // inlined as a classic script, so its cross-module hook is stubbed
+  .replace(/^export /gmu, '');
+const readingHtml = `<!doctype html><html><head><meta charset="utf-8"><style>
+html,body{margin:0;background:#1b1b1f;color:#eee;font:14px system-ui}
+</style></head><body>
+<span class="dsc-reading-anchor" style="display:block;height:1px"></span>
+<div id="scroller" style="overflow-y:auto;width:600px;height:300px;margin:8px">
+  <div id="content" style="height:1200px;background:linear-gradient(#333,#555)"></div>
+</div>
+<textarea id="draft" rows="2" style="width:600px;margin:8px"></textarea>
+<script>const setReadingGesture = () => {};
+${readingSource}
+window.__stop = createReadingMemory({
+  subscribeCurrentSession: (listener) => { window.__notify = listener; return () => {}; },
+  currentSessionId: () => 's1',
+  publish: (key) => { (window.__reports = window.__reports || []).push(key); },
+});
+</script></body></html>`;
 
 /* ---------------------------------------------------------------- render -------------------- */
 
@@ -144,9 +195,99 @@ const result = await page.evaluate(() => {
   return { before, after: read(buttons[1]), marked: buttons[1].classList.contains('dsc-card-cursor') };
 });
 
+// Real scrolling: sending pins the place, the reader's own scroll owns it, the bottom hands control
+// back to the shell. jsdom cannot drive any of this.
+await page.setContent(readingHtml, { waitUntil: 'load' });
+const readTop = () => page.evaluate(() => document.getElementById('scroller').scrollTop);
+const setBottom = () => page.evaluate(() => {
+  const node = document.getElementById('scroller');
+  node.scrollTop = node.scrollHeight; // what the shell does while an answer streams
+});
+const growTo = (height) => page.evaluate((next) => {
+  document.getElementById('content').style.height = `${next}px`;
+}, height);
+
+await setBottom();
+await page.click('#draft');
+await page.type('#draft', 'a question');
+await page.keyboard.press('Enter'); // the real send gesture: no `input` event clears the field
+await page.waitForTimeout(120);
+const pinnedAt = await readTop();
+await growTo(1800);
+await setBottom();
+await page.waitForTimeout(200);
+const afterSend = await readTop();
+
+
+await page.mouse.move(300, 200);
+await page.mouse.wheel(0, -320); // the reader scrolls up mid-answer
+await page.waitForTimeout(250);
+const readerAt = await readTop();
+await growTo(2200);
+await setBottom();
+await page.waitForTimeout(250);
+const heldAt = await readTop();
+
+
+await page.mouse.wheel(0, 4000); // back to the bottom
+await page.waitForTimeout(250);
+await growTo(2600);
+await setBottom();
+await page.waitForTimeout(250);
+const followed = await page.evaluate(() => {
+  const node = document.getElementById('scroller');
+  return { top: node.scrollTop, bottom: node.scrollHeight - node.clientHeight };
+});
+
+const reports = await page.evaluate(() => window.__reports ?? []);
+const readingResults = { pinnedAt, afterSend, readerAt, heldAt, followed, reports: reports.slice(-8) };
+const readingShot = resolve(root, 'artifacts/reading-memory.png');
+await page.screenshot({ path: readingShot });
+
 mkdirSync(resolve(root, 'artifacts'), { recursive: true });
 const shot = resolve(root, 'artifacts/card-cursor.png');
 await page.screenshot({ path: shot });
+
+// The member-list cover: the row actions must take no width until the row is hovered or focused.
+await page.setContent(panelHtml, { waitUntil: 'load' });
+const measure = () =>
+  page.evaluate(() => {
+    const row = document.querySelector('.dsc-row');
+    const actions = document.querySelector('.dsc-row-actions');
+    const alias = document.querySelector('.dsc-row-alias');
+    return {
+      actionsDisplay: getComputedStyle(actions).display,
+      rowWidth: row.getBoundingClientRect().width,
+      aliasWidth: alias.getBoundingClientRect().width,
+      titleWidth: document.querySelector('.dsc-row-sub').getBoundingClientRect().width,
+      avatarDisplay: getComputedStyle(document.querySelector('.dsc-avatar')).display,
+    };
+  });
+// What the row would look like if the actions always occupied space (the state the user complained
+// about), so the gain is measured rather than asserted from a guess.
+const measureWithActions = async () => {
+  await page.evaluate(() => {
+    let probe = document.getElementById('dsc-probe');
+    if (probe === null) {
+      probe = document.createElement('style');
+      probe.id = 'dsc-probe';
+      probe.textContent = '.dsc-member-panel .dsc-row-actions{display:inline-flex !important}';
+      document.head.appendChild(probe);
+    }
+  });
+  const measured = await measure();
+  await page.evaluate(() => document.getElementById('dsc-probe')?.remove());
+  return measured;
+};
+const panelBefore = await measure();
+const panelWithActions = await measureWithActions();
+await page.hover('.dsc-row');
+await page.waitForTimeout(80);
+const panelHovered = await measure();
+const panelShot = resolve(root, 'artifacts/member-panel.png');
+await page.hover('.dsc-mp-head');
+await page.waitForTimeout(80);
+await page.screenshot({ path: panelShot });
 await browser.close();
 
 const visible = (style) => Number.parseFloat(style.outlineWidth) > 0 && style.outlineStyle !== 'none';
@@ -170,5 +311,43 @@ check(
 );
 writeFileSync(resolve(root, 'artifacts/card-cursor.txt'), JSON.stringify({ before: result.before, after: result.after }, null, 2));
 console.log(`screenshot: ${shot}`);
+
+console.log('member-list cover: the row actions stay out of the way');
+check('the row actions take no space by default', panelBefore.actionsDisplay === 'none', panelBefore.actionsDisplay);
+check('hovering the row reveals them', panelHovered.actionsDisplay !== 'none', panelHovered.actionsDisplay);
+check(
+  'the session title now spans most of the row',
+  panelBefore.titleWidth / panelBefore.rowWidth > 0.65,
+  `title=${Math.round(panelBefore.titleWidth)}px of ${Math.round(panelBefore.rowWidth)}px`,
+);
+check(
+  'and the title is wider than when the actions occupied space',
+  panelBefore.titleWidth > panelWithActions.titleWidth,
+  `${Math.round(panelWithActions.titleWidth)}px -> ${Math.round(panelBefore.titleWidth)}px`,
+);
+check(
+  'the alias gains room too',
+  panelBefore.aliasWidth > panelWithActions.aliasWidth,
+  `${Math.round(panelWithActions.aliasWidth)}px -> ${Math.round(panelBefore.aliasWidth)}px`,
+);
+check('the leading member avatar is shown in the cover', panelBefore.avatarDisplay !== 'none', panelBefore.avatarDisplay);
+console.log('reading memory: real scrolling in a real browser');
+console.log(`  reading reports: ${JSON.stringify(readingResults.reports)}`);
+check('sending pins the reading place', Math.abs(readingResults.afterSend - readingResults.pinnedAt) <= 2, `${readingResults.pinnedAt} -> ${readingResults.afterSend}`);
+check(
+  'the reader can scroll up and stay there',
+  Math.abs(readingResults.heldAt - readingResults.readerAt) <= 40,
+  `wheel->${readingResults.readerAt} held->${readingResults.heldAt}`,
+);
+check('and the shell cannot pull them to the bottom', readingResults.heldAt < readingResults.followed.bottom, `held=${readingResults.heldAt}`);
+check(
+  'reaching the bottom hands control back to the shell',
+  Math.abs(readingResults.followed.top - readingResults.followed.bottom) <= 4,
+  JSON.stringify(readingResults.followed),
+);
+writeFileSync(resolve(root, 'artifacts/reading-memory.txt'), JSON.stringify(readingResults, null, 2));
+writeFileSync(resolve(root, 'artifacts/member-panel.txt'), JSON.stringify({ panelBefore, panelHovered }, null, 2));
+console.log(`screenshot: ${panelShot}`);
+console.log(`screenshot: ${readingShot}`);
 console.log(failed === 0 ? 'PASS: the cursor highlight wins the cascade' : `FAIL: ${failed} visual check(s) failed`);
 process.exit(failed === 0 ? 0 : 1);

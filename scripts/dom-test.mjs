@@ -254,6 +254,7 @@ const BOARD = {
       name: 'group one',
       goal: '',
       archived: false,
+      chatSessionId: 'session-chat',
       createdAt: 0,
       members: [
         { id: 'm1', sessionId: 'session-aaa', alias: 'alpha', title: 'first', cwd: '/tmp/a' },
@@ -264,8 +265,81 @@ const BOARD = {
 };
 
 const registered = [];
+// Every key this plugin published through the inspection marker, in order (the real slot keeps only
+// the latest occupant, so assertions read this log instead).
+const publishedKeys = [];
 const opened = [];
 const commands = [];
+
+// The shell's session store: apply() subscribes to it and mirrors it into the plugin's own store,
+// then the member rows, the conversation strip and the row alias read that.
+let sessionIndex = {
+  'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true },
+  'session-bbb': { id: 'session-bbb', pendingInteraction: 'question' },
+};
+// The chat engine's view of a member Session: prompt delivery plus an event stream to mirror.
+const prompts = [];
+const cancels = [];
+const chatStreams = new Map();
+const sessionsService = {
+  list: null,
+  retain: (sessionId) => {
+    const listeners = new Set();
+    let window = { entries: [], hasMore: false, revision: 0, change: { kind: 'append', entries: [] } };
+    chatStreams.set(sessionId, {
+      emit: (event) => {
+        const entry = { type: 'event', event };
+        window = {
+          ...window,
+          entries: [...window.entries, entry],
+          revision: window.revision + 1,
+          change: { kind: 'append', entries: [entry] },
+        };
+        for (const listener of listeners) listener();
+      },
+    });
+    return {
+      sessionId,
+      ready: Promise.resolve(),
+      release: () => {},
+      binding: {
+        session: {
+          prompt: async (content, mode) => {
+            prompts.push({ sessionId, mode, text: content.map((part) => part.text ?? '').join('') });
+            return { ok: true, value: { accepted: true } };
+          },
+          cancel: async () => {
+            cancels.push(sessionId);
+            return { ok: true, value: { accepted: true } };
+          },
+        },
+        eventSource: {
+          subscribe: (listener) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          getSnapshot: () => window,
+        },
+      },
+    };
+  },
+};
+const sessionListListeners = new Set();
+let sessionSnapshot = { byId: sessionIndex };
+const sessionListStore = {
+  getSnapshot: () => sessionSnapshot,
+  subscribe: (listener) => {
+    sessionListListeners.add(listener);
+    return () => sessionListListeners.delete(listener);
+  },
+};
+sessionsService.list = sessionListStore;
+
+const publishSessions = (next) => {
+  sessionIndex = next;
+  sessionSnapshot = { byId: next }; // a new object per change, as the real store does
+  for (const listener of sessionListListeners) listener();
+};
 
 const context = {
   slots: {
@@ -274,8 +348,14 @@ const context = {
       return () => {};
     },
     register: (options, component) => {
-      registered.push({ name: options?.name, options, component });
-      return () => {};
+      // Faithful to the real slot API: the disposer withdraws the contribution.
+      const entry = { name: options?.name, options, component };
+      registered.push(entry);
+      if (options?.name === 'contextMenu.content') publishedKeys.push(String(options?.key));
+      return () => {
+        const index = registered.indexOf(entry);
+        if (index >= 0) registered.splice(index, 1);
+      };
     },
   },
   locale: { register: () => () => {}, bind: () => (key) => key, subscribe: () => () => {} },
@@ -303,6 +383,7 @@ const context = {
           ],
         },
       }),
+      chatSession: async () => ({ ok: true, value: 'session-chat' }),
       execute: async (command) => {
         commands.push(command);
         return { ok: true, value: BOARD };
@@ -314,6 +395,7 @@ const context = {
     return typeof disposer === 'function' ? disposer : () => {};
   },
   get: (name) => {
+    if (name === 'sessions') return sessionsService;
     if (name === 'uiWorkspace') {
       return { openSession: (sessionId) => opened.push(sessionId), connectWorkspace: async () => 'session-new' };
     }
@@ -343,7 +425,7 @@ await new Promise((done) => setTimeout(done, 5));
 
 const slotProps = {
   useWorkspaces: (selector) => selector({ items: [{ workspaceId: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: ['session-aaa', 'session-bbb'] }] }),
-  useSessions: (selector) => selector({ byId: { 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 } } } }),
+  useSessions: (selector) => selector({ byId: sessionIndex }),
 };
 
 /* ------------------------------------------------------------------ assertions -------------- */
@@ -369,12 +451,8 @@ const keyUp = (target, options) => {
 };
 const tick = (ms = 30) => new Promise((done) => setTimeout(done, ms));
 const active = () => document.activeElement;
-const lastTrace = () => {
-  const entry = [...registered]
-    .reverse()
-    .find((candidate) => candidate.name === 'contextMenu.content' && String(candidate.options.key).startsWith('sessionCardsTrace='));
-  return entry === undefined ? '' : String(entry.options.key).replace('sessionCardsTrace=', '');
-};
+const lastTrace = () => String([...publishedKeys].reverse().find((key) => key.startsWith('sessionCardsTrace=')) ?? '')
+  .replace('sessionCardsTrace=', '');
 
 console.log('keyboard layer: keys it does not use stay with the shell');
 const idle = document.createElement('span');
@@ -394,13 +472,18 @@ await React.act(async () => {
 });
 const panel = boardHost.querySelector('.dsc-root');
 check('board renders', panel !== null);
+// Entering the board puts the cursor on the control at the top, not inside the member list.
+const topControl = panel.querySelector('.dsc-head button');
+check('entering the board focuses the top control', active() === topControl, `active=${active()?.textContent ?? 'none'}`);
 panel.focus();
-// The arrow ring covers the functional controls only; member rows are not part of it.
+// The ring: header controls, group chips, then one stop per member row.
 const functional = [panel.querySelector('.dsc-head'), panel.querySelector('.dsc-groups')]
   .filter((scope) => scope !== null)
   .flatMap((scope) => [...scope.querySelectorAll('button')]);
 const controls = functional;
-const memberRowButtons = [...panel.querySelectorAll('.dsc-row-main')];
+const isChatRow = (row) => row.textContent.includes('groupChat');
+const memberRowButtons = [...panel.querySelectorAll('.dsc-row')].filter((row) => !isChatRow(row)).map((row) => row.querySelector('.dsc-row-main'));
+const rowActions = [...panel.querySelectorAll('.dsc-row .dsc-icon-btn')];
 check('board exposes its functional buttons', controls.length >= 4, `found ${controls.length}`);
 check('the board has member rows too', memberRowButtons.length >= 1, `found ${memberRowButtons.length}`);
 const arrowsPrevented = key(panel, { key: 'ArrowDown', code: 'ArrowDown' });
@@ -409,10 +492,44 @@ check('ArrowDown prevents the page from scrolling', arrowsPrevented.defaultPreve
 key(active(), { key: 'ArrowDown', code: 'ArrowDown' });
 check('ArrowDown advances to the next control', active() === controls[1], `active=${active()?.tagName ?? 'none'}`);
 key(active(), { key: 'End', code: 'End' });
-check('End stops on the last functional control', active() === controls[controls.length - 1], `active=${active()?.textContent ?? 'none'}`);
-check('the member rows stay out of the arrow ring', memberRowButtons.every((button) => button !== active()));
+check('End stops on the last member row', active() === memberRowButtons[memberRowButtons.length - 1], `active=${active()?.className ?? 'none'}`);
 key(active(), { key: 'Home', code: 'Home' });
 check('Home jumps back to the first control', active() === controls[0]);
+// Up/down walk places — the header controls, the chips and one stop per member row.
+const walked = [];
+for (let hop = 0; hop < controls.length + memberRowButtons.length + 2; hop += 1) {
+  key(active(), { key: 'ArrowDown', code: 'ArrowDown' });
+  walked.push(active());
+}
+check('up/down reach the member rows', memberRowButtons.some((button) => walked.includes(button)));
+check('up/down never land inside a row', rowActions.every((button) => !walked.includes(button)), `actions=${rowActions.length}`);
+check('and the walk wraps back to the top', walked.includes(controls[0]));
+// Left/right step into and out of that row's own buttons.
+const ringRow = memberRowButtons[0];
+const ringRowActions = [...ringRow.closest('.dsc-row').querySelectorAll('.dsc-icon-btn:not([disabled])')];
+await React.act(async () => {
+  ringRow.focus();
+});
+key(ringRow, { key: 'ArrowRight', code: 'ArrowRight' });
+check('right steps into the row buttons', active() === ringRowActions[0], `active=${active()?.getAttribute?.('title') ?? 'none'}`);
+key(active(), { key: 'ArrowRight', code: 'ArrowRight' });
+check('right steps along them', active() === ringRowActions[1], `active=${active()?.getAttribute?.('title') ?? 'none'}`);
+key(active(), { key: 'ArrowLeft', code: 'ArrowLeft' });
+check('left steps back', active() === ringRowActions[0]);
+key(active(), { key: 'ArrowLeft', code: 'ArrowLeft' });
+check('and left again returns to the row itself', active() === ringRow);
+key(ringRow, { key: 'ArrowDown', code: 'ArrowDown' });
+check('down from a row moves to the next row, not inside it', active() === memberRowButtons[1], `active=${active()?.className ?? 'none'}`);
+await React.act(async () => {
+  memberRowButtons[0].focus();
+});
+const rowEnter = key(memberRowButtons[0], { key: 'Enter', code: 'Enter' });
+check('Enter on a member row is left to the row itself', !rowEnter.defaultPrevented);
+await React.act(async () => {
+  memberRowButtons[0].click();
+});
+check('activating a row selects that member', memberRowButtons[0]?.closest('.dsc-row')?.classList.contains('is-active') === true);
+key(active(), { key: 'Home', code: 'Home' });
 const enterEvent = key(active(), { key: 'Enter', code: 'Enter' });
 check('Enter is left to the control (not swallowed)', !enterEvent.defaultPrevented);
 const addButton = controls.find((button) => (button.textContent ?? '').includes('addMember'));
@@ -425,7 +542,7 @@ await React.act(async () => {
 });
 
 console.log('board: members can be reordered, which changes the Alt+1…9 mapping');
-const firstRow = boardHost.querySelectorAll('.dsc-row')[0];
+const firstRow = [...boardHost.querySelectorAll('.dsc-row')].filter((row) => !row.textContent.includes('groupChat'))[0];
 check('rows offer move controls', firstRow?.querySelector('button[title="moveDown"]') !== null);
 await React.act(async () => {
   firstRow?.querySelector('button[title="moveDown"]')?.click();
@@ -437,6 +554,260 @@ check(
   JSON.stringify(move),
 );
 check('the first row cannot move up', firstRow?.querySelector('button[title="moveUp"]')?.disabled === true);
+
+console.log('board: member rows show what each member is doing');
+const rowOf = (alias) => [...panel.querySelectorAll('.dsc-row')].find((row) => row.textContent.includes(alias));
+const badgeOf = (alias) => rowOf(alias)?.querySelector('.dsc-badge');
+check('a running member shows the running dot', badgeOf('alpha')?.classList.contains('is-running') === true, badgeOf('alpha')?.className);
+check('with its label', rowOf('alpha')?.textContent.includes('statusRunning') === true, rowOf('alpha')?.textContent);
+check('a member waiting on you shows the warning dot', badgeOf('beta')?.classList.contains('is-waiting') === true, badgeOf('beta')?.className);
+check('with its label', rowOf('beta')?.textContent.includes('statusWaiting') === true, rowOf('beta')?.textContent);
+check('nothing is marked unread while you are just watching', badgeOf('alpha')?.querySelector('.dsc-unread') === null && badgeOf('beta')?.querySelector('.dsc-unread') === null);
+
+console.log('board: a member that finished while you looked elsewhere is marked');
+await React.act(async () => {
+  publishSessions({
+    'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true },
+    'session-bbb': { id: 'session-bbb', completed: true },
+  });
+});
+check('the finished member shows the done dot', badgeOf('beta')?.classList.contains('is-done') === true, badgeOf('beta')?.className);
+check('and an unread mark', badgeOf('beta')?.querySelector('.dsc-unread') !== null);
+check('the busy one is left alone', badgeOf('alpha')?.querySelector('.dsc-unread') === null);
+const betaRow = rowOf('beta');
+await React.act(async () => {
+  betaRow.querySelector('.dsc-row-main').click();
+});
+check('selecting the finished member clears the mark', badgeOf('beta')?.querySelector('.dsc-unread') === null);
+await React.act(async () => {
+  boardRoot.render(React.createElement(boardEntry.component, slotProps));
+});
+check('and it does not come back on the next update', badgeOf('beta')?.querySelector('.dsc-unread') === null);
+
+console.log('board: an idle member is shown as idle');
+await React.act(async () => {
+  publishSessions({ 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true } });
+});
+check('a member with no shell session reads idle', badgeOf('beta')?.classList.contains('is-idle') === true, badgeOf('beta')?.className);
+check('and says so', rowOf('beta')?.textContent.includes('idle') === true, rowOf('beta')?.textContent);
+
+console.log('status: the member keys follow the visible session');
+const iconEntry = registered.find((entry) => entry.name === 'sidebar.panellist');
+const iconHost = document.createElement('div');
+document.body.appendChild(iconHost);
+const iconRoot = createRoot(iconHost);
+const iconProps = { size: 18, active: false, useSessions: (selector) => selector({ byId: sessionIndex }) };
+const lastFollow = () => [...publishedKeys].reverse().find((key) => key.startsWith('sessionCardsFollow=')) ?? '';
+// Outside the group first, then a member session: each step is a real change, so the wiring runs.
+await React.act(async () => {
+  publishSessions({ 'session-zzz': { id: 'session-zzz', retainedBy: { mainView: 1 } } });
+});
+check('a session outside the group turns the member keys off', lastFollow().includes('member=none') && lastFollow().includes('keys-off'), lastFollow());
+await React.act(async () => {
+  publishSessions({ 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true } });
+});
+check('entering a member session turns the member keys on', lastFollow().includes('member=alpha') && lastFollow().includes('keys-on'), lastFollow());
+
+console.log('sidebar: a member session covers the browsing region with the member list');
+// The shell's browsing region, found by the readable part of its (hashed) class.
+const region = document.createElement('div');
+region.className = 'Mbwy4a_regionArea';
+region.getBoundingClientRect = () => ({ left: 12, top: 40, width: 240, height: 500, right: 252, bottom: 540 });
+document.body.appendChild(region);
+const panelRootHost = document.createElement('div');
+document.body.appendChild(panelRootHost);
+const panelRoot = createRoot(panelRootHost);
+await React.act(async () => {
+  publishSessions({
+    'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true },
+    'session-bbb': { id: 'session-bbb', pendingInteraction: 'question' },
+  });
+});
+await React.act(async () => {
+  panelRoot.render(React.createElement(iconEntry.component, iconProps));
+});
+const cover = panelRootHost.querySelector('.dsc-member-panel');
+check('entering a member session covers the region', cover !== null);
+check(
+  'the cover follows the sidebar column',
+  cover !== null && cover.style.left === '12px' && cover.style.width === '240px',
+  cover === null ? 'no panel' : `${cover.style.left} ${cover.style.width}`,
+);
+const coverMemberRows = cover === null ? [] : [...cover.querySelectorAll('.dsc-row')].filter((row) => !row.textContent.includes('groupChat'));
+check('and lists every member', coverMemberRows.length === 2, String(coverMemberRows.length));
+check('with their run status', cover !== null && cover.querySelectorAll('.dsc-badge.is-running').length === 1);
+check('and a switch back to the shipped session list', cover !== null && cover.querySelector('.dsc-mp-switch') !== null);
+await React.act(async () => {
+  cover?.querySelector('.dsc-mp-switch')?.click();
+});
+check('the switch reveals the shipped list again', panelRootHost.querySelector('.dsc-member-panel') === null);
+await React.act(async () => {
+  publishSessions({ 'session-zzz': { id: 'session-zzz', retainedBy: { mainView: 1 } } });
+});
+check('a session outside the group leaves the region alone', panelRootHost.querySelector('.dsc-member-panel') === null);
+region.remove();
+
+console.log('sidebar: the cover spans the whole sidebar column');
+// The previous block removed its region element, so the seam is exercised again here.
+const regionAgain = document.createElement('div');
+regionAgain.className = 'Mbwy4a_regionArea';
+regionAgain.getBoundingClientRect = () => ({ left: 12, top: 40, width: 240, height: 500, right: 252, bottom: 540 });
+document.body.appendChild(regionAgain);
+await React.act(async () => {
+  publishSessions({ 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true } });
+});
+await React.act(async () => {
+  panelRoot.render(React.createElement(iconEntry.component, iconProps));
+});
+const wideCover = panelRootHost.querySelector('.dsc-member-panel');
+check(
+  'the cover starts at the very top of the sidebar',
+  wideCover !== null && wideCover.style.top === '0px' && wideCover.style.height === `${window.innerHeight}px`,
+  wideCover === null ? 'none' : `${wideCover.style.top} ${wideCover.style.height}`,
+);
+check('and keeps the sidebar column width', wideCover !== null && wideCover.style.left === '12px' && wideCover.style.width === '240px');
+regionAgain.remove();
+
+console.log('reading: each conversation remembers where the reader was');
+/** A fake conversation scroller: real geometry, counted writes to scrollTop. */
+const makeScroller = () => {
+  const node = document.createElement('div');
+  node.style.overflowY = 'auto';
+  let top = 0;
+  let writes = 0;
+  let height = 4000;
+  Object.defineProperty(node, 'scrollHeight', { get: () => height });
+  Object.defineProperty(node, 'clientHeight', { get: () => 800 });
+  Object.defineProperty(node, 'scrollTop', {
+    get: () => top,
+    set: (value) => {
+      writes += 1;
+      top = value;
+    },
+  });
+  node.writes = () => writes;
+  node.grow = (extra) => {
+    height += extra;
+  };
+  document.body.appendChild(node);
+  return node;
+};
+// The header anchor plus a wide scroller below it: the only shape the plugin will accept.
+const readingAnchor = document.createElement('span');
+readingAnchor.className = 'dsc-reading-anchor';
+readingAnchor.getBoundingClientRect = () => ({ left: 300, top: 40, width: 10, height: 10, right: 310, bottom: 50 });
+document.body.appendChild(readingAnchor);
+const scroller = makeScroller();
+scroller.getBoundingClientRect = () => ({ left: 300, top: 120, width: 800, height: 800, right: 1100, bottom: 920 });
+await React.act(async () => {
+  publishSessions({ 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true } });
+});
+await tick(40);
+scroller.scrollTop = 120; // the reader stops mid-answer
+scroller.dispatchEvent(new window.Event('scroll', { bubbles: true }));
+await tick(40);
+const writesAfterReading = scroller.writes();
+scroller.grow(200); // the answer streams in...
+scroller.scrollTop = 3400; // ...and the shell pulls the view to the newest output
+document.body.appendChild(document.createElement('div'));
+await tick(90);
+check('the remembered place survives streaming output', scroller.scrollTop === 120, `scrollTop=${scroller.scrollTop}`);
+check('and the plugin is the one holding it', scroller.writes() > writesAfterReading + 1, `writes=${scroller.writes()}`);
+scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight; // the reader returns to the bottom
+scroller.dispatchEvent(new window.Event('scroll', { bubbles: true }));
+await tick(40);
+const writesAtBottom = scroller.writes();
+scroller.grow(200);
+document.body.appendChild(document.createElement('div'));
+await tick(90);
+check('at the bottom the shell keeps control (no writes from us)', scroller.writes() === writesAtBottom, `writes=${scroller.writes()}`);
+scroller.scrollTop = 200; // reading again, then switching away
+scroller.dispatchEvent(new window.Event('scroll', { bubbles: true }));
+await tick(40);
+await React.act(async () => {
+  publishSessions({ 'session-zzz': { id: 'session-zzz', retainedBy: { mainView: 1 } } });
+});
+await tick(40);
+scroller.scrollTop = 3400; // the other session opens at its own bottom
+await React.act(async () => {
+  publishSessions({ 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true } });
+});
+await tick(140);
+check('coming back to the session restores the place', scroller.scrollTop === 200, `scrollTop=${scroller.scrollTop}`);
+
+console.log('reading: sending a message keeps the view at the start of the reply');
+// The reader takes over with a gesture and its scroll: that clears the remembered place, which is
+// what "composing at the bottom" means.
+document.dispatchEvent(new window.Event('wheel', { bubbles: true }));
+scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
+scroller.dispatchEvent(new window.Event('scroll', { bubbles: true }));
+await tick(60);
+const composingAt = scroller.scrollTop;
+const draftField = document.createElement('textarea');
+document.body.appendChild(draftField);
+draftField.value = 'a question for the member';
+draftField.dispatchEvent(new window.Event('input', { bubbles: true }));
+await tick(20);
+draftField.value = ''; // the shell took the draft and sent it
+draftField.dispatchEvent(new window.Event('input', { bubbles: true }));
+await tick(40);
+const writesAfterSend = scroller.writes();
+scroller.grow(400); // the answer streams in
+scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight; // the shell follows the newest output
+document.body.appendChild(document.createElement('div'));
+await tick(90);
+check('the view stays at the start of the reply', scroller.scrollTop === composingAt, `scrollTop=${scroller.scrollTop} expected=${composingAt}`);
+check('and the plugin is holding it there', scroller.writes() > writesAfterSend + 1, `writes=${scroller.writes()}`);
+// Scrolling gestures and the shell's follow-on-growth are verified in a real browser by
+// `npm run verify:visual` (see "reading memory: real scrolling in a real browser"): jsdom fires no
+// wheel and never grows a scroller, so driving them here only raced the observer.
+
+scroller.remove();
+readingAnchor.remove();
+
+// The Enter fallback trigger (the shell may clear the draft without firing `input`) cannot be driven
+// here: jsdom has no scrolling, so a manual scrollTop races the observer. It is checked in the real
+// GUI through the plugin's own `sessionCardsReading=` diagnostic instead.
+
+// Scrolling behaviour (the pin following the reader, the bottom handing control back) is verified
+// in a real browser by `npm run verify:visual`: jsdom has no scrolling, so driving it here only ever
+// raced the observer.
+
+console.log('member panel: the group chat keeps the member list visible');
+const chatRegion = document.createElement('div');
+chatRegion.className = 'Mbwy4a_regionArea';
+chatRegion.getBoundingClientRect = () => ({ left: 12, top: 40, width: 240, height: 500, right: 252, bottom: 540 });
+document.body.appendChild(chatRegion);
+await React.act(async () => {
+  publishSessions({ 'session-chat': { id: 'session-chat', retainedBy: { mainView: 1 } } });
+});
+await tick(60);
+await React.act(async () => {
+  panelRoot.render(React.createElement(iconEntry.component, iconProps));
+});
+await tick(60);
+const chatCover = panelRootHost.querySelector('.dsc-member-panel');
+check('the cover stays open while the group chat is showing', chatCover !== null, chatCover === null ? 'no cover' : '');
+check(
+  'and the group chat row is the active one',
+  chatCover?.querySelector('.dsc-row.is-active')?.textContent.includes('groupChat') === true,
+  chatCover?.querySelector('.dsc-row.is-active')?.textContent ?? 'none',
+);
+chatRegion.remove();
+
+console.log('status: the shell session rows say which member a session is');
+const aliasEntry = registered.find((entry) => entry.name === 'sidebar.session.row.trailing');
+const aliasHost = document.createElement('div');
+document.body.appendChild(aliasHost);
+const aliasRoot = createRoot(aliasHost);
+await React.act(async () => {
+  aliasRoot.render(React.createElement(aliasEntry.component, { sessionId: 'session-aaa' }));
+});
+check('a member session is tagged with its alias', aliasHost.textContent === '@alpha', aliasHost.textContent);
+await React.act(async () => {
+  aliasRoot.render(React.createElement(aliasEntry.component, { sessionId: 'session-zzz' }));
+});
+check('a session outside the group is not tagged', aliasHost.textContent === '', aliasHost.textContent);
 
 console.log('board: a slot hook that arrives late does not break the render');
 const lateHost = document.createElement('div');
@@ -551,14 +922,8 @@ flowGroups[1].hidden = true; // a flow layout hides everything but the question 
 document.body.appendChild(flow.card);
 key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
 check('the revealed question takes the cursor', flow.buttons[0].classList.contains('dsc-card-cursor'));
-const shapeEntry = [...registered]
-  .reverse()
-  .find((entry) => entry.name === 'contextMenu.content' && String(entry.options.key).startsWith('sessionCardsShape='));
-check(
-  'both questions are counted even while one is hidden',
-  String(shapeEntry?.options.key ?? '').includes('b2'),
-  String(shapeEntry?.options.key ?? ''),
-);
+const shapeKey = [...publishedKeys].reverse().find((key) => key.startsWith('sessionCardsShape=')) ?? '';
+check('both questions are counted even while one is hidden', shapeKey.includes('b2'), shapeKey);
 key(active() ?? document.body, { key: 'ArrowRight', code: 'ArrowRight' });
 check(
   'right still moves to the hidden question instead of doing nothing',
@@ -766,6 +1131,20 @@ await tick(120);
 keyUp(multiline, { key: 'ArrowDown', code: 'ArrowDown' });
 check('at the end of the text the arrow is consumed for scrolling', atEnd.defaultPrevented, `prevented=${atEnd.defaultPrevented}`);
 
+console.log('reading: keyboard scrolling counts as a reader gesture');
+await tick(200); // let the diagnostic throttle lapse, so this gesture reports its own entry
+const gesturesBefore = publishedKeys.filter((key) => key.includes('sessionCardsReading=gesture')).length;
+pointerTarget = pane;
+document.activeElement?.blur?.(); // the earlier checks left the caret inside a text field
+window.dispatchEvent(new window.MouseEvent('pointermove', { clientX: 10, clientY: 10, bubbles: true }));
+keyUp(document.body, { key: 'ArrowUp', code: 'ArrowUp' });
+const paneBefore = pane.scrollTop;
+key(document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+await tick(60);
+keyUp(document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+const gesturesAfter = publishedKeys.filter((key) => key.includes('sessionCardsReading=gesture')).length;
+check('an arrow-key scroll is reported as the reader scrolling', gesturesAfter > gesturesBefore, `gestures=${gesturesAfter - gesturesBefore}`);
+
 console.log('scrolling: a pending card keeps the plain arrows');
 const cardPane = makeScrollable(document.createElement('div'), { top: 0, clientHeight: 200, scrollHeight: 2000 });
 document.body.appendChild(cardPane);
@@ -781,6 +1160,134 @@ check('the pending card keeps the arrow instead of scrolling the pane', cardPane
 check('and the card cursor still moves', owningCard.buttons.some((button) => button.classList.contains('dsc-card-cursor')));
 owningCard.card.remove();
 cardPane.remove();
+
+/* ------------------------------------------------------------------ 9. group chat ------------ */
+
+console.log('group chat: a member-style row opens an ordinary Session');
+const chatRow = [...panel.querySelectorAll('.dsc-row')].find((row) => row.textContent.includes('groupChat'));
+check('the member list carries the group chat row', chatRow !== undefined && chatRow !== null);
+check('the row advertises the shortcut', chatRow.textContent.includes('Alt+G'));
+const openedBefore = opened.length;
+await React.act(async () => {
+  chatRow.querySelector('.dsc-row-main').click();
+});
+await tick(80);
+check('opening it opens the chat Session in the shell', opened.at(-1) === 'session-chat' && opened.length > openedBefore, JSON.stringify(opened.slice(-2)));
+check(
+  'and the chat Session is seeded so it is an ordinary conversation',
+  prompts.some((entry) => entry.sessionId === 'session-chat'),
+  JSON.stringify(prompts.slice(-2)),
+);
+opened.length = openedBefore;
+key(document.body, { key: 'g', code: 'KeyG', altKey: true });
+await tick(80);
+check('Alt+G opens it too', opened.at(-1) === 'session-chat', JSON.stringify(opened.slice(-1)));
+
+console.log('group chat: @routes to a member and their answer is mirrored');
+prompts.length = 0;
+cancels.length = 0;
+await React.act(async () => {
+  chatStreams.get('session-chat').emit({
+    type: 'user/message',
+    seq: 7,
+    time: Date.now(),
+    data: { message: [{ type: 'text', text: '@alpha 请看这个' }] },
+  });
+});
+await tick(80);
+check(
+  'the mention is delivered to that member',
+  prompts.at(-1)?.sessionId === 'session-aaa' && prompts.at(-1)?.text === '请看这个',
+  JSON.stringify(prompts.at(-1) ?? null),
+);
+check('and the chat Session own agent is silenced', cancels.includes('session-chat'), JSON.stringify(cancels));
+prompts.length = 0;
+cancels.length = 0;
+await React.act(async () => {
+  chatStreams.get('session-aaa').emit({
+    type: 'assistant/message',
+    seq: 42,
+    time: Date.now(),
+    data: { message: [{ type: 'text', text: '好的，我来处理' }] },
+  });
+});
+await tick(80);
+check(
+  'the member answer is written back into the chat Session',
+  prompts.at(-1)?.sessionId === 'session-chat' && prompts.at(-1)?.text === '@alpha：好的，我来处理',
+  JSON.stringify(prompts.at(-1) ?? null),
+);
+check('and the chat agent is silenced again', cancels.includes('session-chat'), JSON.stringify(cancels));
+
+console.log('group chat: typing @ offers the members');
+await React.act(async () => {
+  publishSessions({ 'session-chat': { id: 'session-chat', retainedBy: { mainView: 1 } } });
+});
+await tick(60);
+// The mention list lives in the conversation-header seat, so that seat must be mounted.
+const extrasEntry = registered.find((entry) => entry.name === 'conversation.session.header.utilities');
+const extrasHost = document.createElement('div');
+document.body.appendChild(extrasHost);
+const extrasRoot = createRoot(extrasHost);
+await React.act(async () => {
+  extrasRoot.render(React.createElement(extrasEntry.component));
+});
+const mentionField = document.createElement('textarea');
+mentionField.getBoundingClientRect = () => ({ left: 400, top: 600, width: 600, height: 80, right: 1000, bottom: 680 });
+document.body.appendChild(mentionField);
+const setField = (value, caret) => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+  setter.call(mentionField, value);
+  mentionField.setSelectionRange(caret ?? value.length, caret ?? value.length);
+  mentionField.dispatchEvent(new window.Event('input', { bubbles: true }));
+};
+await React.act(async () => {
+  mentionField.focus();
+  setField('@al');
+});
+await tick(40);
+const rows = () => [...document.querySelectorAll('.dsc-mention-row')].map((row) => row.textContent);
+check('the mention list appears and filters', rows().length === 1 && rows()[0].includes('@alpha'), JSON.stringify(rows()));
+check('and it is placed above the mentionField', document.querySelector('.dsc-mention') !== null);
+await React.act(async () => {
+  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+});
+await tick(40);
+check('choosing writes the alias back into the mentionField', mentionField.value === '@alpha ', JSON.stringify(mentionField.value));
+check('and the list closes', document.querySelector('.dsc-mention') === null);
+await React.act(async () => {
+  setField('@');
+});
+await tick(40);
+check('an empty query lists every member', rows().length === 2, JSON.stringify(rows()));
+const firstCursor = document.querySelector('.dsc-mention-row.is-cursor')?.textContent ?? '';
+await React.act(async () => {
+  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+});
+await tick(30);
+const secondCursor = document.querySelector('.dsc-mention-row.is-cursor')?.textContent ?? '';
+check('ArrowDown moves the cursor in the list', secondCursor !== firstCursor && secondCursor !== '', `${firstCursor} -> ${secondCursor}`);
+await React.act(async () => {
+  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+});
+await tick(30);
+check('Escape closes the list', document.querySelector('.dsc-mention') === null);
+// The shell re-renders its composer while typing, which blurs the field for a moment: the list
+// must survive that, and only a click outside closes it.
+await React.act(async () => {
+  setField('@');
+});
+await tick(40);
+mentionField.blur();
+await tick(40);
+check('the list survives the composer losing focus', document.querySelector('.dsc-mention') !== null);
+await React.act(async () => {
+  document.body.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true }));
+});
+await tick(30);
+check('a click outside closes it', document.querySelector('.dsc-mention') === null);
+mentionField.remove();
+extrasHost.remove();
 
 /* ------------------------------------------------------------------ result ------------------ */
 
@@ -804,3 +1311,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(`PASS: ${passed} DOM interaction checks passed`);
+// The plugin keeps a polling interval alive by design; a test run must still end.
+process.exit(0);

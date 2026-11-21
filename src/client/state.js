@@ -79,6 +79,13 @@ class Controller {
     }
   }
 
+  /** The Session hosting one group's chat (created on first use, Host side). */
+  async chatSession(groupId) {
+    const result = await this.remote.chatSession({ groupId }, this.life.signal);
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
   async execute(command) {
     if (this.state.busy) throw new Error('busy');
     this.update({ busy: true, error: null });
@@ -194,6 +201,134 @@ const navHistory = [];
 
 /** The member list that replaces the sidebar browsing region in focus mode. */
 
+const EMPTY_SESSIONS = {};
+
+/** What the "member keys follow the visible session" wiring observed, for one-shot diagnosis. */
+export const followProbe = { props: 'no', current: 'none', member: 'none', taken: 'no' };
+export const describeFollow = () => `props=${followProbe.props}:cur=${followProbe.current}:member=${followProbe.member}:taken=${followProbe.taken}`;
+
+/**
+ * The shell's session nodes, fed from `ctx.sessions.list` by apply(). A store of our own, because
+ * the header and row seats hand us only a sessionId — their standardProps do not carry this data.
+ */
+let sessionIndexState = EMPTY_SESSIONS;
+const sessionIndexListeners = new Set();
+const sessionIndexStore = {
+  subscribe: (listener) => {
+    sessionIndexListeners.add(listener);
+    return () => sessionIndexListeners.delete(listener);
+  },
+  getSnapshot: () => sessionIndexState,
+};
+export const useSessionIndex = () => React.useSyncExternalStore(sessionIndexStore.subscribe, sessionIndexStore.getSnapshot);
+export const setSessionIndex = (byId) => {
+  const next = byId === null || byId === undefined ? EMPTY_SESSIONS : byId;
+  if (next === sessionIndexState) return; // a poll that finds nothing new must not churn the tree
+  sessionIndexState = next;
+  for (const listener of sessionIndexListeners) listener();
+};
+
+/** The Session the main view retains — the same rule the shell's own browser uses. */
+export const currentSessionIdOf = (byId) => Object.values(byId ?? {}).find((session) => (session.retainedBy?.mainView ?? 0) > 0)?.id;
+
+/** The keyboard layer reports a real scroll gesture here; the reading memory listens to it. */
+let readingGesture = null;
+export const setReadingGesture = (handler) => {
+  readingGesture = handler;
+};
+export const noteReadingGesture = () => {
+  readingGesture?.();
+};
+
+/** The chat engine, created by apply(): the view sends through it. */
+let groupChat = null;
+export const setGroupChat = (engine) => {
+  groupChat = engine;
+};
+export const getGroupChat = () => groupChat;
+
+/** The group a Session belongs to — as a member, or as the group's own chat Session. */
+export function groupOfSession(boardState, sessionId) {
+  if (sessionId === undefined || sessionId === null) return null;
+  for (const group of boardState?.data?.groups ?? []) {
+    if (group.archived === true) continue;
+    if (group.chatSessionId !== undefined && group.chatSessionId !== null && group.chatSessionId === sessionId) {
+      return { group, member: null };
+    }
+    const member = group.members.find((candidate) => candidate.sessionId === sessionId);
+    if (member !== undefined) return { group, member };
+  }
+  return null;
+}
+
+/** The group member that owns a Session, if any: this is what makes the member list follow it. */
+export function memberOfSession(boardState, sessionId) {
+  if (sessionId === undefined || sessionId === null) return null;
+  for (const group of boardState?.data?.groups ?? []) {
+    if (group.archived === true) continue;
+    const member = group.members.find((candidate) => candidate.sessionId === sessionId);
+    if (member !== undefined) return { group, member };
+  }
+  return null;
+}
+
+/**
+ * What a member is doing, from the same shell fields its own session list uses: a pending
+ * interaction (approval / plan review / question), running, just finished, or idle.
+ */
+export function memberStatus(member, sessions) {
+  const session = sessions?.[member.sessionId];
+  if (session === null || session === undefined) return { kind: 'idle', key: 'idle' };
+  if (session.pendingInteraction !== null && session.pendingInteraction !== undefined) {
+    return { kind: 'waiting', key: 'statusWaiting' };
+  }
+  if (session.running === true || (session.runningSubagentCount ?? 0) > 0) {
+    return { kind: 'running', key: 'statusRunning' };
+  }
+  if (session.completed === true) return { kind: 'done', key: 'statusDone' };
+  return { kind: 'idle', key: 'idle' };
+}
+
+// "Finished while you were looking at someone else": a small subscribable set so the mark is
+// reactive, and it clears as soon as that member is selected or opened.
+let unreadState = {};
+const unreadListeners = new Set();
+const unreadStore = {
+  subscribe: (listener) => {
+    unreadListeners.add(listener);
+    return () => unreadListeners.delete(listener);
+  },
+  getSnapshot: () => unreadState,
+};
+const publishUnread = (next) => {
+  unreadState = next;
+  for (const listener of unreadListeners) listener();
+};
+export const useUnread = () => React.useSyncExternalStore(unreadStore.subscribe, unreadStore.getSnapshot);
+// A member whose current "done" state was already acknowledged must not be marked unread again by
+// a later store update; leaving "done" (a new run) makes the next completion news again.
+const seenDone = new Set();
+export const markMemberSeen = (memberId) => {
+  seenDone.add(memberId);
+  if (unreadState[memberId] !== true) return;
+  const next = { ...unreadState };
+  delete next[memberId];
+  publishUnread(next);
+};
+export const noteMemberStatus = (memberId, kind, viewing) => {
+  if (kind !== 'done') {
+    seenDone.delete(memberId);
+    if (unreadState[memberId] === true) markMemberSeen(memberId);
+    seenDone.delete(memberId);
+    return;
+  }
+  if (viewing === true || seenDone.has(memberId)) {
+    markMemberSeen(memberId);
+    return;
+  }
+  if (unreadState[memberId] !== true) publishUnread({ ...unreadState, [memberId]: true });
+};
+
 // --- wiring: index.js installs the controller and the focus-mode navigation implementations ---
 export const setController = (next) => {
   controller = next;
@@ -204,8 +339,15 @@ export const setFocusCtx = (ctx) => {
   focusCtx = ctx;
 };
 export const getCurrentShellSessionId = () => currentShellSessionId;
+const sessionListeners = new Set();
+export const subscribeCurrentSession = (listener) => {
+  sessionListeners.add(listener);
+  return () => sessionListeners.delete(listener);
+};
 export const setCurrentShellSessionId = (sessionId) => {
+  if (currentShellSessionId === sessionId) return;
   currentShellSessionId = sessionId;
+  for (const listener of sessionListeners) listener();
 };
 export const pushSessionHistory = (sessionId) => {
   navHistory.push(sessionId);

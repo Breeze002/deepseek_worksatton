@@ -4,7 +4,7 @@ import { NS } from '../constants.js';
 import { CSS } from '../styles.js';
 import { Btn, Icon, MemberRow, revealInScroller } from './parts.js';
 import { AddMemberForm, CreateGroupForm, Modal, NewSessionForm } from './dialogs.js';
-import { groupMembersOf, newCommandId, setFocus, useController, useControllerState, useFocus, enterFocus, exitFocus } from '../state.js';
+import { getCurrentShellSessionId, getGroupChat, groupMembersOf, markMemberSeen, memberStatus, newCommandId, noteMemberStatus, setFocus, useController, useControllerState, useFocus, useSessionIndex, useUnread, enterFocus, exitFocus } from '../state.js';
 
 const h = React.createElement;
 
@@ -30,7 +30,11 @@ function Board({ ctx, slotProps }) {
   // Panel focus: arrows walk every control of the board (buttons first-class), Enter activates.
   const panelRef = React.useRef(null);
   React.useEffect(() => {
-    if (dialog === null) panelRef.current?.focus?.();
+    if (dialog !== null) return;
+    const root = panelRef.current;
+    if (root === null) return;
+    // Entering the board lands on the first control at the top; the arrows walk down into the rows.
+    (blockItems(root)[0] ?? root).focus?.();
   }, [dialog]);
 
   const groups = (state.data?.groups ?? []).filter((group) => !group.archived);
@@ -42,6 +46,16 @@ function Board({ ctx, slotProps }) {
   const workspacesHook = React.useRef(slotProps?.useWorkspaces);
   const readWorkspaces = workspacesHook.current ?? ((selector) => selector({ items: [] }));
   const workspaceItems = readWorkspaces((snapshot) => snapshot?.items);
+
+  // Member run status: the shell's own session fields, read through its selector hook.
+  const sessions = useSessionIndex();
+  const unread = useUnread();
+  React.useEffect(() => {
+    if (group === null) return;
+    for (const member of group.members) {
+      noteMemberStatus(member.id, memberStatus(member, sessions).kind, member.id === focus.memberId);
+    }
+  }, [group, sessions, focus.memberId]);
 
   React.useEffect(() => {
     if (dialog !== 'create' && dialog !== 'add') return;
@@ -136,6 +150,21 @@ function Board({ ctx, slotProps }) {
   };
 
   /** Arrow keys walk the board's controls; the focused one keeps its native Enter/Space. */
+  /**
+   * The arrow ring. Up/down walk the controls that stand for a place in the board — the header
+   * controls, the group chips and one stop per member row — while left/right step into and out of
+   * that row's own buttons (reorder, open, remove).
+   */
+  const interactive = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]';
+  const onScreen = (node) => node instanceof HTMLElement && node.offsetParent !== null;
+  const collect = (scope, selector) => (scope === null ? [] : [...scope.querySelectorAll(selector)].filter(onScreen));
+  const blockItems = (root) => [
+    ...collect(root.querySelector('.dsc-head'), interactive),
+    ...collect(root.querySelector('.dsc-groups'), interactive),
+    ...collect(root.querySelector('.dsc-members'), '.dsc-row-main:not([disabled])'),
+  ];
+  const rowActionsOf = (row) => (row === null ? [] : collect(row, '.dsc-icon-btn:not([disabled])'));
+
   const onPanelKey = (event) => {
     if (dialog !== null) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -147,25 +176,39 @@ function Board({ ctx, slotProps }) {
     if (step === 0 && event.key !== 'Home' && event.key !== 'End') return;
     const root = panelRef.current;
     if (root === null) return;
-    // Only the functional controls take the arrow keys: the header actions and the group chips.
-    // The member rows stay reachable with the mouse and with Tab.
-    const scopes = [root.querySelector('.dsc-head'), root.querySelector('.dsc-groups')].filter((scope) => scope !== null);
-    const items = scopes
-      .flatMap((scope) => [...scope.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]')])
-      .filter((node) => node instanceof HTMLElement && node.offsetParent !== null);
-    if (items.length === 0) return;
+    const blocks = blockItems(root);
+    if (blocks.length === 0) return;
+    const current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const row = current?.closest?.('.dsc-row') ?? null;
+    const actions = rowActionsOf(row);
+    const inActions = current !== null && actions.includes(current);
+    const blockIndex = blocks.findIndex((node) => node === current || (row !== null && node === row.querySelector('.dsc-row-main')));
+    const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+    const walk = (from, delta) => blocks[(from + delta + blocks.length) % blocks.length];
+    let next;
+    if (event.key === 'Home') {
+      next = blocks[0];
+    } else if (event.key === 'End') {
+      next = blocks[blocks.length - 1];
+    } else if (horizontal === false) {
+      // Up/down switch between rows (and the controls above them), never inside a row.
+      next = blockIndex < 0 ? (step > 0 ? blocks[0] : blocks[blocks.length - 1]) : walk(blockIndex, step);
+    } else if (inActions) {
+      const index = actions.indexOf(current) + step;
+      next = index >= 0 && index < actions.length
+        ? actions[index]
+        : step > 0
+          ? walk(blockIndex, 1)
+          : row.querySelector('.dsc-row-main') ?? walk(blockIndex, 0);
+    } else if (row !== null && actions.length > 0 && step > 0) {
+      next = actions[0];
+    } else {
+      next = blockIndex < 0 ? (step > 0 ? blocks[0] : blocks[blocks.length - 1]) : walk(blockIndex, step);
+    }
+    if (next === null || next === undefined) return;
     event.preventDefault();
-    const current = items.indexOf(document.activeElement);
-    const index = event.key === 'Home'
-      ? 0
-      : event.key === 'End'
-        ? items.length - 1
-        : current < 0
-          ? (step > 0 ? 0 : items.length - 1)
-          : (current + step + items.length) % items.length;
-    const next = items[index];
-    next?.focus();
-    if (next !== undefined) revealInScroller(next);
+    next.focus();
+    revealInScroller(next);
   };
 
   /** Reordering persists because it decides the Alt+1…9 mapping. */
@@ -309,6 +352,16 @@ function Board({ ctx, slotProps }) {
               h(
               'div',
               { className: 'dsc-members' },
+              // The group chat sits with the members: one row, opened like any other.
+              h(MemberRow, {
+                key: '__chat__',
+                t,
+                member: { id: '__chat__', alias: t('groupChat'), title: t('groupChatHint') },
+                hint: 'Alt+G',
+                active: getCurrentShellSessionId() === group.chatSessionId,
+                onSelect: () => void getGroupChat()?.open(group.id),
+                onOpen: () => void getGroupChat()?.open(group.id),
+              }),
               group.members.length === 0
                 ? h('p', { className: 'dsc-note', style: { padding: '10px 2px' } }, t('noMembers'))
                 : group.members.map((member, index) =>
@@ -319,8 +372,15 @@ function Board({ ctx, slotProps }) {
                       busy: state.busy,
                       active: member.id === focus.memberId,
                       hint: index < 9 ? `Alt+${index + 1}` : undefined,
-                      onSelect: (target) => setFocus({ memberId: target.id }),
-                      onOpen: openSession,
+                      status: { ...memberStatus(member, sessions), unread: unread[member.id] === true },
+                      onSelect: (target) => {
+                        markMemberSeen(target.id);
+                        setFocus({ memberId: target.id });
+                      },
+                      onOpen: (target) => {
+                        markMemberSeen(target.id);
+                        openSession(target);
+                      },
                       onMove: (target, delta) => moveMember(target, delta),
                       canUp: index > 0,
                       canDown: index < group.members.length - 1,

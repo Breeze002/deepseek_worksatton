@@ -55,7 +55,7 @@ function Icon({ name, size = 16 }) {
 
 /** One member row, shared by the board list and the sidebar focus list. */
 
-function MemberRow({ t, member, busy, active, hint, onSelect, onOpen, onRemove, onMove, canUp, canDown }) {
+function MemberRow({ t, member, busy, active, hint, status, onSelect, onOpen, onRemove, onMove, canUp, canDown }) {
   const moveKeyDown = (event) => {
     if (onMove === undefined || event.ctrlKey !== true) return;
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -83,12 +83,18 @@ function MemberRow({ t, member, busy, active, hint, onSelect, onOpen, onRemove, 
           'span',
           { className: 'dsc-row-top' },
           h('span', { className: 'dsc-row-alias' }, member.alias),
+          status === undefined ? null : h('span', { className: 'dsc-row-status' }, t(status.key)),
           hint ? h('span', { className: 'dsc-row-key' }, hint) : null,
         ),
         h('span', { className: 'dsc-row-sub' }, member.title || t('unnamed')),
       ),
     ),
-    h('span', { className: 'dsc-badge', title: t('idle') }, h('span', { className: 'dsc-dot' })),
+    h(
+      'span',
+      { className: `dsc-badge${status === undefined ? '' : ` is-${status.kind}`}`, title: t(status === undefined ? 'idle' : status.key) },
+      h('span', { className: 'dsc-dot' }),
+      status?.unread === true ? h('span', { className: 'dsc-unread', title: t('statusUnread') }, t('statusUnread')) : null,
+    ),
     h(
       'span',
       { className: 'dsc-row-actions' },

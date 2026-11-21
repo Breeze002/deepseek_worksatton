@@ -1,5 +1,5 @@
 /** The window keyboard layer. */
-import { focusState, groupMembersOf, latestBoardState, setFocus, exitFocus, enterFocus, openMember, popSessionHistory, stepMember } from './state.js';
+import { focusState, getCurrentShellSessionId, getGroupChat, groupMembersOf, latestBoardState, memberOfSession, noteReadingGesture, setFocus, exitFocus, enterFocus, openMember, popSessionHistory, stepMember } from './state.js';
 import { revealInScroller } from './view/parts.js';
 
 /**
@@ -21,6 +21,7 @@ export function createKeyboardLayer(ctx, deps) {
       const digit = /^Digit([0-9])$/u.exec(event.code);
       if (digit !== null) return `digit:${digit[1]}`;
       if (event.code === 'Backquote') return 'back';
+      if (event.code === 'KeyG') return 'chat';
       // Arrow stepping stays on plain Alt (and Ctrl+Alt); Alt+Shift+arrows belong to scrolling.
       if (withShift) return null;
       if (event.code === 'ArrowUp') return 'prev';
@@ -39,9 +40,26 @@ export function createKeyboardLayer(ctx, deps) {
       ctx.get('uiWorkspace')?.openSession(previous);
     };
 
+    /** Which group the shortcuts act on: the one owning the visible Session, else the first. */
+    const activeGroup = () => {
+      const groups = (latestBoardState?.data?.groups ?? []).filter((group) => group.archived !== true);
+      const owner = memberOfSession(latestBoardState, getCurrentShellSessionId());
+      if (owner !== null) return owner.group;
+      return groups[0] ?? null;
+    };
+
     const onMemberKey = (event) => {
       const combo = memberCombo(event);
       if (combo === null) return;
+      if (combo === 'chat') {
+        const group = activeGroup();
+        if (group === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        publish('sessionCardsChat=shortcut');
+        void getGroupChat()?.open(group.id);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       const members = groupMembersOf(latestBoardState);
@@ -107,7 +125,10 @@ export function createKeyboardLayer(ctx, deps) {
     // Held keys run a per-frame scroll instead of one jump per repeat event, so holding Shift+↓
     // scrolls continuously and stops the moment the key is released or the window loses focus.
     const scrollLoop = { frame: 0, speed: 0, target: null, code: '' };
+    /** The scroll diagnostics report the first key of a run only, so they cannot stomp other ones. */
+    let scrollReported = false;
     const stopScrollLoop = () => {
+      scrollReported = false;
       if (scrollLoop.frame !== 0) window.cancelAnimationFrame(scrollLoop.frame);
       scrollLoop.frame = 0;
       scrollLoop.speed = 0;
@@ -121,6 +142,9 @@ export function createKeyboardLayer(ctx, deps) {
       scrollLoop.code = code;
       let last = performance.now();
       const step = (now) => {
+        // The arrows really are scrolling now, so the reading memory must follow them instead of
+        // holding the place pinned at send time — that fight is what looked like a freeze.
+        noteReadingGesture();
         if (scrollLoop.target === null) return;
         const elapsed = Math.min(64, now - last);
         last = now;
@@ -194,7 +218,10 @@ export function createKeyboardLayer(ctx, deps) {
         publish(`sessionCardsScroll=${event.code}:no-scrollable-pane`);
         return;
       }
-      publish(`sessionCardsScroll=${event.code}:scrolling`);
+      if (scrollReported !== true) {
+        scrollReported = true;
+        publish(`sessionCardsScroll=${event.code}:scrolling`);
+      }
       event.preventDefault();
       event.stopPropagation();
       if (event.repeat) return; // the loop already runs; swallow the repeats

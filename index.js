@@ -15,7 +15,7 @@ import { Service } from '@deepseek-ai/cordis';
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { commandSchema } from './lib/model.js';
+import { commandSchema, newId } from './lib/model.js';
 import { remoteInfo } from './lib/rpc.js';
 import { CardStore } from './lib/store.js';
 
@@ -260,6 +260,35 @@ export default class SessionCardsService extends TypertRemoteService {
   }
 
   /** Validate one user operation against live Session facts, then commit it durably. */
+  /**
+   * The Session hosting one group's chat: created on first use, so the chat is an ordinary
+   * conversation the shell itself renders. Returns the Session identity.
+   */
+  async chatSession(request, signal) {
+    this._owner();
+    this._note('chatSession');
+    signal?.throwIfAborted?.();
+    const group = this._require().snapshot().groups.find((candidate) => candidate.id === request.groupId);
+    if (group === undefined) throw new RemoteError('gateway/bad-request', '群组不存在', {});
+    if (group.chatSessionId !== null && group.chatSessionId !== undefined) return group.chatSessionId;
+    const controller = this.ctx.get('sessionController');
+    const created = await controller.create({ cwd: group.members[0]?.cwd });
+    signal?.throwIfAborted?.();
+    try {
+      // A name in the session list makes the chat identifiable next to the members.
+      await controller.rename({ sessionId: created.sessionId, title: `群聊 · ${group.name}`.slice(0, 80) });
+    } catch {
+      /* a chat that cannot be renamed is still usable */
+    }
+    await this._require().execute({
+      commandId: newId(),
+      action: 'setChatSession',
+      groupId: group.id,
+      sessionId: created.sessionId,
+    });
+    return created.sessionId;
+  }
+
   async execute(raw, signal) {
     this._owner();
     this._note('execute');

@@ -63,6 +63,37 @@ check('a repeated command id is a no-op', order() === once, once);
 
 check('the reordered list was persisted', Array.isArray(saved?.groups?.[0]?.members) && saved.groups[0].members.map((member) => member.sessionId).join() === order(), order());
 
+await store.execute({
+  commandId: newId(),
+  action: 'postChatMessage',
+  groupId: group.id,
+  from: 'you',
+  alias: '你',
+  text: '@a1 请看这个',
+});
+const chat = store.snapshot().groups[0].messages;
+check('a chat line is stored with its author', chat.length === 1 && chat[0].from === 'you' && chat[0].alias === '你', JSON.stringify(chat[0] ?? null));
+await store.execute({
+  commandId: newId(),
+  action: 'postChatMessage',
+  groupId: group.id,
+  from: second,
+  alias: 'a2',
+  text: '收到，我来处理',
+});
+const chat2 = store.snapshot().groups[0].messages;
+check('and lines keep their order', chat2.length === 2 && chat2[1].from === second, chat2.map((line) => line.from).join(','));
+const repeatedChat = newId();
+await store.execute({ commandId: repeatedChat, action: 'postChatMessage', groupId: group.id, from: 'you', alias: '你', text: 'only once' });
+await store.execute({ commandId: repeatedChat, action: 'postChatMessage', groupId: group.id, from: 'you', alias: '你', text: 'only once' });
+check('a repeated chat command stays a no-op', store.snapshot().groups[0].messages.length === 3, String(store.snapshot().groups[0].messages.length));
+check('and the chat is persisted', Array.isArray(saved?.groups?.[0]?.messages) && saved.groups[0].messages.length === 3);
+
+await store.execute({ commandId: newId(), action: 'setChatSession', groupId: group.id, sessionId: 'session-chat' });
+check('the group remembers its chat session', store.snapshot().groups[0].chatSessionId === 'session-chat');
+check('and it is persisted', saved?.groups?.[0]?.chatSessionId === 'session-chat');
+check('a fresh group starts without one', store.snapshot().groups.every((entry) => entry.chatSessionId !== undefined));
+
 let refused = false;
 try {
   await store.execute({ commandId: newId(), action: 'moveMember', groupId: group.id, memberId: 'missing', toIndex: 0 });

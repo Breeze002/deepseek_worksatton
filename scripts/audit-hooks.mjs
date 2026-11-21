@@ -25,7 +25,8 @@ const files = clientFiles.map((path) => ({
   source: readFileSync(path, 'utf8').split('\n'),
 }));
 
-const hookPattern = /\bReact\.use[A-Za-z]+\(/;
+// React hooks and this package's own custom hooks (`useController(`, `useSessionIndex(`…).
+const hookPattern = /(?:\bReact\.use[A-Za-z]+|\buse[A-Z][A-Za-z0-9]*)\s*\(/u;
 const earlyReturnPattern = /^ {2}if \(.*\)\s*return\b/u;
 const startPattern = /^(?:export )?function ([A-Z][A-Za-z0-9]*)\(/;
 let current = null;

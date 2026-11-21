@@ -20,6 +20,17 @@ const h = React.createElement;
 
 
 const zh = {
+  createAndJoin: '创建并加入',
+  creating: '创建中…',
+  focusHint: 'Alt+数字 切成员 · Alt+G 群聊 · Alt+↑↓ 上/下一个 · Alt+0 回看板',
+  focusOn: '群视图',
+  newBlank: '新建空白会话',
+  newSessionHint: '选一个工作区，并为新会话起个名字',
+  newSessionTitle: '新建成员会话',
+  noMembers: '还没有成员',
+  noWorkspace: '没有可用工作区',
+  pickWorkspace: '选择工作区',
+  unnamed: '未命名',
   title: '会话卡片',
   create: '新建群组',
   empty: '还没有群组',
@@ -31,12 +42,22 @@ const zh = {
   archive: '归档',
   archiveNote: '归档后卡片从看板移走，成员会话本身不受影响。',
   remove: '移出',
-      moveUp: '上移',
-      moveDown: '下移',
+  moveUp: '上移',
+  moveDown: '下移',
   removeNote: '把该成员移出群组，不会影响它的会话。',
   openSession: '打开会话',
   cardNoTask: '未派活',
   idle: '空闲',
+  statusRunning: '运行中',
+  statusWaiting: '等你处理',
+  statusDone: '已完成',
+  statusUnread: '新',
+  showSessions: '显示会话',
+  groupChat: '群聊',
+  groupChatHint: '群聊（普通会话界面，用 @成员 找人回答）',
+  groupChatReady: '群聊已就绪 —— 输入 @成员名 提问，成员的回答会出现在这里。',
+  send: '发送',
+  nextMember: '下一个成员',
   members: '成员',
   groups: '群组',
   name: '群组名称',
@@ -57,6 +78,17 @@ const zh = {
   needMember: '请至少选择一个会话',
 };
 const en = {
+  createAndJoin: 'Create and join',
+  creating: 'Creating…',
+  focusHint: 'Alt+digit switches member · Alt+G group chat · Alt+↑↓ step · Alt+0 back to the board',
+  focusOn: 'Group view',
+  newBlank: 'New blank session',
+  newSessionHint: 'Pick a workspace and name the new session',
+  newSessionTitle: 'New member session',
+  noMembers: 'No members yet',
+  noWorkspace: 'No workspace available',
+  pickWorkspace: 'Pick a workspace',
+  unnamed: 'Untitled',
   title: 'Session cards',
   create: 'New group',
   empty: 'No groups yet',
@@ -68,12 +100,22 @@ const en = {
   archive: 'Archive',
   archiveNote: 'Archiving removes the cards from this board. Member sessions are unaffected.',
   remove: 'Remove',
-      moveUp: 'Move up',
-      moveDown: 'Move down',
+  moveUp: 'Move up',
+  moveDown: 'Move down',
   removeNote: 'Removes this member from the group; its session is unaffected.',
   openSession: 'Open session',
   cardNoTask: 'No task yet',
   idle: 'Idle',
+  statusRunning: 'Running',
+  statusWaiting: 'Needs you',
+  statusDone: 'Done',
+  statusUnread: 'new',
+  showSessions: 'Sessions',
+  groupChat: 'Group chat',
+  groupChatHint: 'Group chat — a normal conversation; mention @name to ask someone',
+  groupChatReady: 'Group chat ready — type @name to ask a member; their answer appears here.',
+  send: 'Send',
+  nextMember: 'Next member',
   members: 'Members',
   groups: 'Groups',
   name: 'Group name',
@@ -98,10 +140,13 @@ const en = {
 import { CARD_CSS } from './styles.js';
 import { NS, PANEL_ID } from './constants.js';
 import { Board } from './view/board.js';
-import { FocusList, SidebarEntry } from './view/focus-list.js';
+import { SidebarEntry } from './view/entry.js';
+import { ReadingAnchor, SessionRowAlias } from './view/status.js';
 import { PanelBoundary, createPublisher, setReportDiagnostic } from './diagnostics.js';
-import { Controller, setController, getController, setFocus, setFocusCtx, setNavActions, pushSessionHistory, getCurrentShellSessionId } from './state.js';
+import { Controller, currentSessionIdOf, describeFollow, followProbe, newCommandId, setController, getController, groupOfSession, latestBoardState, memberOfSession, setGroupChat, setSessionIndex, setFocus, setFocusCtx, setNavActions, pushSessionHistory, getCurrentShellSessionId, setCurrentShellSessionId, subscribeCurrentSession, runtimeListeners } from './state.js';
 import { createKeyboardLayer } from './keyboard.js';
+import { createReadingMemory } from './reading.js';
+import { createGroupChat } from './chat.js';
 
 export const inject = ['slots', 'locale', 'remote'];
 
@@ -134,9 +179,6 @@ export async function apply(ctx) {
     ),
   );
 
-  // Focus mode: while it is on, the member list owns the sidebar browsing region and the main
-  // area shows the selected member's own Conversation. Unregistering restores the shipped
-  // session browser, so "back to board" is a real exit rather than a second mode.
   // Readiness marker: an inert keyed contribution nobody dispatches, so it renders nothing while
   // Client inspection can still report what this half reached — including optional wiring errors.
   const publish = createPublisher(ctx);
@@ -144,23 +186,110 @@ export async function apply(ctx) {
 
   try {
   setFocusCtx(ctx);
-  let sidebarOccupant;
-  const mountSidebarList = () => {
-    try {
-      sidebarOccupant ??= ctx.slots.register(
-        { name: 'sidebar.workspaces' },
-        (slotProps) => h(PanelBoundary, null, h(FocusList, slotProps)),
-      );
-    } catch (failure) {
-      ctx.logger?.warn?.(`session-cards: sidebar takeover failed: ${failure instanceof Error ? failure.message : String(failure)}`);
+
+  // The shell's session nodes are the source for member status and for "which Session is shown".
+  // Seeded here rather than inside an effect so the first render of any surface already has it.
+  const sessionList = ctx.get('sessions')?.list;
+  let lastSnapshot;
+  const syncSessions = () => {
+    const snapshot = sessionList?.getSnapshot();
+    if (snapshot === lastSnapshot) return; // the store hands out a new object per change
+    lastSnapshot = snapshot;
+    const byId = snapshot?.byId ?? {};
+    setSessionIndex(byId);
+    setCurrentShellSessionId(currentSessionIdOf(byId));
+  };
+  try {
+    syncSessions();
+  } catch (failure) {
+    publish(`sessionCardsSessionIndexError=${failure instanceof Error ? failure.message : String(failure)}`);
+  }
+  ctx.effect(() => {
+    // The store's notification API is not part of any plugin contract, so a light poll keeps the
+    // member status honest when subscribing is not available; a poll that finds the same snapshot
+    // costs one reference comparison.
+    const off = typeof sessionList?.subscribe === 'function' ? sessionList.subscribe(syncSessions) : undefined;
+    const timer = typeof window.setInterval === 'function' ? window.setInterval(syncSessions, 1000) : undefined;
+    return () => {
+      off?.();
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, 'session-cards: session index');
+
+  // The group chat is an ordinary Session: route `@member` from it into that member's Session, and
+  // mirror the member's answers back into it as lines.
+  const chatEngine = createGroupChat({
+    sessions: () => ctx.get('sessions'),
+    controller: () => getController(),
+    openSession: (sessionId) => ctx.get('uiWorkspace')?.openSession(sessionId),
+    membersOf: (groupId) => (latestBoardState?.data?.groups ?? []).find((group) => group.id === groupId)?.members ?? [],
+    seedLine: () => t('groupChatReady'),
+    publish,
+  });
+  setGroupChat(chatEngine);
+  // Routing follows the board: every live group's chat and members are watched once.
+  const followChats = () => {
+    for (const group of latestBoardState?.data?.groups ?? []) {
+      if (group.archived === true) continue;
+      void chatEngine.follow(group.id);
     }
   };
-  const unmountSidebarList = () => {
-    if (sidebarOccupant === undefined) return;
-    sidebarOccupant();
-    sidebarOccupant = undefined;
-  };
-  ctx.effect(() => () => unmountSidebarList(), 'session-cards: sidebar takeover');
+  runtimeListeners.add(followChats);
+  ctx.effect(() => () => {
+    runtimeListeners.delete(followChats);
+    chatEngine.stop();
+  }, 'session-cards: group chat');
+  window.setTimeout(followChats, 0);
+
+  // Remember where the reader was in each Session, and hold that place while an answer streams in.
+  ctx.effect(
+    () => createReadingMemory({ subscribeCurrentSession, currentSessionId: getCurrentShellSessionId, publish }),
+    'session-cards: reading memory',
+  );
+
+  // Member status where the shell already is: a strip in every member conversation's header, and the
+  // member alias on the shell's own session rows. The sidebar browsing region cannot be taken over
+  // (it is a single "declaring is claiming" slot), so the status rides the rows instead.
+  ctx.slots.inject('conversation.session.header.utilities', () =>
+    ctx.slots.register(
+      { name: 'conversation.session.header.utilities', id: 'session-cards-reading-anchor', order: 6, locale: NS },
+      ReadingAnchor,
+    ),
+  );
+  ctx.slots.inject('sidebar.session.row.trailing', () =>
+    ctx.slots.register(
+      { name: 'sidebar.session.row.trailing', id: 'session-cards-alias', order: 5, locale: NS },
+      SessionRowAlias,
+    ),
+  );
+
+  // Member keys follow the visible Session: inside a member's conversation Alt+1…9 and Alt+↑↓ work
+  // without opening the board first. An explicit "back to board" stands them down until the user
+  // switches Session again.
+  let keysStoodDown = false;
+  let followedSession;
+  ctx.effect(() => {
+    const sync = () => {
+      const sessionId = getCurrentShellSessionId();
+      if (sessionId !== followedSession) {
+        followedSession = sessionId;
+        keysStoodDown = false;
+      }
+      const owner = groupOfSession(latestBoardState, sessionId);
+      const on = owner !== null && keysStoodDown !== true;
+      followProbe.member = owner === null ? 'none' : (owner.member?.alias ?? 'chat');
+      followProbe.taken = on ? 'keys-on' : 'keys-off';
+      setFocus({ on });
+      publish(`sessionCardsFollow=${describeFollow()}`);
+    };
+    runtimeListeners.add(sync);
+    const unsubscribe = subscribeCurrentSession(sync);
+    sync();
+    return () => {
+      unsubscribe();
+      runtimeListeners.delete(sync);
+    };
+  }, 'session-cards: member keys follow the visible session');
 
   const openMember = (member) => {
     const current = getCurrentShellSessionId();
@@ -177,7 +306,7 @@ export async function apply(ctx) {
     publish(`sessionCardsOpened=${member.alias}`);
   };
   const enterFocusImpl = (options) => {
-    mountSidebarList();
+    keysStoodDown = false;
     setFocus({ on: true });
     // Show whatever the shell has selected; switching members is an explicit key or click so
     // entering the group view never jumps the conversation somewhere unexpected. `clearPanel` is
@@ -186,7 +315,7 @@ export async function apply(ctx) {
     if (options?.clearPanel !== false) ctx.get('layout')?.selectPanel(null);
   };
   const exitFocusImpl = () => {
-    unmountSidebarList();
+    keysStoodDown = true;
     setFocus({ on: false });
     ctx.get('layout')?.selectPanel(PANEL_ID);
   };
