@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session cards",
+    "description": "Lay existing sessions out as member cards: read each member's status and current task on its card, and open that member's own session from the card. The sidebar icon opens the board as a full-width panel."
+  }
+}

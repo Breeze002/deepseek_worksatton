@@ -1,0 +1,18 @@
+# dependencies
+node_modules/
+
+# build output: `npm run build` regenerates it from src/client/index.js
+client.js
+
+# local npm cache used by this workspace
+.npm-cache/
+
+# visual check output (npm run verify:visual)
+artifacts/
+
+# packed bundles and local logs
+*.tgz
+.restart.log
+
+# editor / OS
+.DS_Store

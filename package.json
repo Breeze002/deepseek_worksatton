@@ -1,0 +1,53 @@
+{
+  "name": "dsh-session-cards",
+  "version": "0.8.5",
+  "private": true,
+  "type": "module",
+  "description": "Session card board: one card per member session, dispatch tasks and watch status",
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4 || ^4.0.5-alpha.1 || ^4.0.6-alpha.1",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.7-rc.2 <0.1.8-0 || >=0.2.0-rc.1 <0.2.1-0 || >=0.2.1-alpha.1 <0.2.2-0 || >=0.2.2-alpha.1 <0.2.3-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg"
+  ],
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "verify": "node scripts/build-client.mjs && node scripts/audit-hooks.mjs && node scripts/smoke-client.mjs && node scripts/dom-test.mjs",
+    "verify:visual": "node scripts/visual-test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "jsdom": "^31.0.1",
+    "playwright": "^1.65.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}
