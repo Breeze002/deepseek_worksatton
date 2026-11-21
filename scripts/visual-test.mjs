@@ -79,7 +79,7 @@ const shellGlobals = ['dsh-client-ui-conversation', 'dsh-client-ui-chat', 'dsh-c
   .join('\n');
 const outlineResets = (shellGlobals.match(/[^{}]{0,80}\{[^{}]{0,200}outline\s*:\s*(?:none|0)[^{}]{0,120}\}/gu) ?? []).slice(0, 8);
 
-const clientSource = readFileSync(resolve(root, 'src/client/index.js'), 'utf8');
+const clientSource = readFileSync(resolve(root, 'src/client/styles.js'), 'utf8');
 const cardCss = /const CARD_CSS = ([\s\S]*?);\n/u.exec(clientSource)?.[1]
   ?.replace(/\/\/[^\n]*/gu, '')
   .split('+')
