@@ -21,7 +21,10 @@ const h = React.createElement;
 const NS = 'session-cards';
 const PANEL_ID = 'session-cards';
 // Injected into <head>: the question-card cursor must be visible even when our panel is closed.
-const CARD_CSS = '.dsc-card-cursor{outline:2px solid var(--dsw-alias-state-business-primary,#2f6fed) !important;'
+const CARD_CSS = '.dsc-card-ring{position:fixed;z-index:2147483000;pointer-events:none;display:none;'
+  + 'border:2px solid var(--dsw-alias-state-business-primary,#2f6fed);border-radius:var(--dsw-radius-sm,6px);'
+  + 'background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#2f6fed) 16%,transparent)}'
+  + '.dsc-card-cursor{outline:2px solid var(--dsw-alias-state-business-primary,#2f6fed) !important;'
   + 'outline-offset:2px !important;background-color:color-mix(in srgb,var(--dsw-alias-state-business-primary,#2f6fed) 16%,transparent) !important;'
   + 'border-radius:var(--dsw-radius-sm,6px) !important}';const RECONNECT_MS = 2_000;
 
@@ -37,6 +40,8 @@ const zh = {
   archive: '归档',
   archiveNote: '归档后卡片从看板移走，成员会话本身不受影响。',
   remove: '移出',
+      moveUp: '上移',
+      moveDown: '下移',
   removeNote: '把该成员移出群组，不会影响它的会话。',
   openSession: '打开会话',
   cardNoTask: '未派活',
@@ -72,6 +77,8 @@ const en = {
   archive: 'Archive',
   archiveNote: 'Archiving removes the cards from this board. Member sessions are unaffected.',
   remove: 'Remove',
+      moveUp: 'Move up',
+      moveDown: 'Move down',
   removeNote: 'Removes this member from the group; its session is unaffected.',
   openSession: 'Open session',
   cardNoTask: 'No task yet',
@@ -127,7 +134,7 @@ const CSS = [
   '.dsc-row.is-active{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14))}',
   '.dsc-row.is-active .dsc-row-alias{color:var(--dsw-alias-state-business-primary,#2f6fed)}',
   '.dsc-row-main{display:flex;flex:1;min-width:0;align-items:center;gap:9px;height:100%;margin:0;padding:0;border:0;background:0 0;color:inherit;font:inherit;text-align:left;cursor:pointer}',
-  '.dsc-row-main:focus-visible,.dsc-icon-btn:focus-visible,.dsc-btn:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,Highlight);outline-offset:1px}',
+  '.dsc-row-main:focus-visible,.dsc-icon-btn:focus-visible,.dsc-btn:focus-visible{outline:var(--dsw-focus-cursorRing-width,2px) solid var(--dsw-focus-cursorRing-color,Highlight);outline-offset:1px}',
   '.dsc-avatar{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:var(--dsw-radius-sm,6px);background:var(--dsw-alias-button-elevated-fill,rgba(127,127,127,.2));color:var(--dsw-alias-label-secondary,GrayText);font-size:11px;font-weight:600;line-height:1}',
   '.dsc-row.is-active .dsc-avatar{color:var(--dsw-alias-state-business-primary,#2f6fed)}',
   '.dsc-row-text{display:flex;flex:1;min-width:0;flex-direction:column;gap:1px;line-height:1.25}',
@@ -155,7 +162,7 @@ const CSS = [
   '.dsc-field label{font-size:11.5px;color:var(--dsw-alias-label-caption,GrayText)}',
   '.dsc-input,.dsc-textarea{width:100%;padding:6px 9px;border:.5px solid var(--dsw-alias-border-l4,rgba(127,127,127,.38));border-radius:var(--dsw-radius-md,8px);background:transparent;color:inherit;font:inherit;font-size:12.5px}',
   '.dsc-textarea{min-height:52px;resize:vertical}',
-  '.dsc-input:focus,.dsc-textarea:focus{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,Highlight);outline-offset:0}',
+  '.dsc-input:focus,.dsc-textarea:focus{outline:var(--dsw-focus-cursorRing-width,2px) solid var(--dsw-focus-cursorRing-color,Highlight);outline-offset:0}',
   '.dsc-picks{display:flex;flex-direction:column;max-height:260px;overflow:auto;margin:0;padding:0;border:.5px solid var(--dsw-alias-border-l3,rgba(127,127,127,.28));border-radius:var(--dsw-radius-md,8px)}',
   '.dsc-pick-group{display:flex;flex-direction:column}',
   '.dsc-pick-grouphead{position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 9px 4px;font-size:10.5px;font-weight:600;color:var(--dsw-alias-label-caption,GrayText);background:var(--dsw-alias-bg-layer-1,Canvas)}',
@@ -563,6 +570,8 @@ function Icon({ name, size = 16 }) {
     back: 'M10 3.5 5.5 8l4.5 4.5',
     plus: 'M8 3.5v9M3.5 8h9',
     users: 'M6 7.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4ZM2 13.2c0-1.8 1.8-2.9 4-2.9s4 1.1 4 2.9M11 6.4a1.8 1.8 0 1 0 0-3.6M12 13.2c0-1.4-.7-2.4-2-2.8',
+    up: 'M8 12.5V3.5M4.5 7 8 3.5 11.5 7',
+    down: 'M8 3.5v9M4.5 9 8 12.5 11.5 9',
   };
   return h(
     'svg',
@@ -583,7 +592,13 @@ function Icon({ name, size = 16 }) {
 }
 
 /** One member row, shared by the board list and the sidebar focus list. */
-function MemberRow({ t, member, busy, active, hint, onSelect, onOpen, onRemove }) {
+function MemberRow({ t, member, busy, active, hint, onSelect, onOpen, onRemove, onMove, canUp, canDown }) {
+  const moveKeyDown = (event) => {
+    if (onMove === undefined || event.ctrlKey !== true) return;
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    onMove(member, event.key === 'ArrowUp' ? -1 : 1);
+  };
   const initial = (member.alias ?? '?').trim().slice(0, 1).toUpperCase();
   return h(
     'div',
@@ -594,6 +609,7 @@ function MemberRow({ t, member, busy, active, hint, onSelect, onOpen, onRemove }
         type: 'button',
         className: 'dsc-row-main',
         onClick: () => onSelect(member),
+        onKeyDown: moveKeyDown,
         title: member.title,
       },
       h('span', { className: 'dsc-avatar', 'aria-hidden': true }, initial),
@@ -613,6 +629,20 @@ function MemberRow({ t, member, busy, active, hint, onSelect, onOpen, onRemove }
     h(
       'span',
       { className: 'dsc-row-actions' },
+      onMove
+        ? h(
+            'button',
+            { type: 'button', className: 'dsc-icon-btn', title: t('moveUp'), disabled: busy || canUp === false, onClick: () => onMove(member, -1) },
+            h(Icon, { name: 'up', size: 13 }),
+          )
+        : null,
+      onMove
+        ? h(
+            'button',
+            { type: 'button', className: 'dsc-icon-btn', title: t('moveDown'), disabled: busy || canDown === false, onClick: () => onMove(member, 1) },
+            h(Icon, { name: 'down', size: 13 }),
+          )
+        : null,
       onOpen
         ? h(
             'button',
@@ -862,6 +892,24 @@ function FocusList(props) {
     return () => active.detach();
   }, [active]);
 
+  /** Reordering persists because it decides the Alt+1…9 mapping. */
+  const moveMember = async (member, delta) => {
+    if (!active || !group) return;
+    const index = group.members.findIndex((candidate) => candidate.id === member.id);
+    if (index < 0) return;
+    try {
+      await active.execute({
+        commandId: newCommandId(),
+        action: 'moveMember',
+        groupId: group.id,
+        memberId: member.id,
+        toIndex: index + delta,
+      });
+    } catch (failure) {
+      active.reportError(failure);
+    }
+  };
+
   const groups = (state.data?.groups ?? []).filter((group) => !group.archived);
   const group = groups.find((candidate) => candidate.id === state.groupId) ?? groups[0] ?? null;
 
@@ -912,6 +960,9 @@ function FocusList(props) {
               busy: false,
               hint: index < 9 ? `Alt+${index + 1}` : undefined,
               onSelect: (target) => selectMember(target),
+              onMove: (target, delta) => moveMember(target, delta),
+              canUp: index > 0,
+              canDown: index < group.members.length - 1,
             }),
           ),
     ),
@@ -1162,6 +1213,24 @@ function Board({ ctx, slotProps }) {
     if (next !== undefined) revealInScroller(next);
   };
 
+  /** Reordering persists because it decides the Alt+1…9 mapping. */
+  const moveMember = async (member, delta) => {
+    if (!active || !group) return;
+    const index = group.members.findIndex((candidate) => candidate.id === member.id);
+    if (index < 0) return;
+    try {
+      await active.execute({
+        commandId: newCommandId(),
+        action: 'moveMember',
+        groupId: group.id,
+        memberId: member.id,
+        toIndex: index + delta,
+      });
+    } catch (failure) {
+      active.reportError(failure);
+    }
+  };
+
   const openSession = (member) => {
     const workspace = ctx.get('uiWorkspace');
     if (!workspace) return;
@@ -1297,6 +1366,9 @@ function Board({ ctx, slotProps }) {
                       hint: index < 9 ? `Alt+${index + 1}` : undefined,
                       onSelect: (target) => setFocus({ memberId: target.id }),
                       onOpen: openSession,
+                      onMove: (target, delta) => moveMember(target, delta),
+                      canUp: index > 0,
+                      canDown: index < group.members.length - 1,
                       onRemove: (target) => {
                         setPendingRemove(target);
                         setDialog('remove');
@@ -1678,6 +1750,12 @@ export async function apply(ctx) {
     else if (event.code === 'ArrowUp') delta = -70;
     else return;
     if (!plain && !plainShift && !(altWith && event.shiftKey)) return; // Alt alone only pages
+    // A pending card owns the plain arrows: letting the scroller take them moved the card out from
+    // under the user, which read as the cursor jumping to a different box. Page keys still scroll.
+    if (plain && (event.code === 'ArrowUp' || event.code === 'ArrowDown') && pendingCard() !== null) {
+      publish(`sessionCardsScroll=${event.code}:held-by-card`);
+      return;
+    }
     const held = (why) => {
       publish(`sessionCardsScroll=${event.code}:${why}`);
     };
@@ -1847,9 +1925,14 @@ export async function apply(ctx) {
     && node.getClientRects().length > 0
     && node.closest('[aria-hidden="true"]') === null;
   const optionButtons = (card) => {
-    const rows = [...card.querySelectorAll('[data-option-row] button:not([disabled])')].filter(onScreen);
-    if (rows.length > 0) return rows;
-    return [...card.querySelectorAll('button:not([disabled])')].filter(onScreen);
+    // A choice is a radio/checkbox; the shell also puts copy and expand icon buttons inside the same
+    // option row, and treating those as choices parked the cursor on a tiny corner button.
+    const choices = [...card.querySelectorAll('[data-option-row] button[role="radio"]:not([disabled]), [data-option-row] button[role="checkbox"]:not([disabled])')]
+      .filter(onScreen);
+    if (choices.length > 0) return choices;
+    const fallback = [...card.querySelectorAll('[role="radio"]:not([disabled]), [role="checkbox"]:not([disabled])')].filter(onScreen);
+    if (fallback.length > 0) return fallback;
+    return [...card.querySelectorAll('[data-option-row] button:not([disabled])')].filter(onScreen);
   };
   /**
    * One block per question. The host declares each question's choices as a `radiogroup` (single) or
@@ -1857,9 +1940,10 @@ export async function apply(ctx) {
    * card would mix the questions together.
    */
   const questionBlocks = (card) => {
+    // Every question counts, even one whose options the shell has not revealed yet: dropping those
+    // collapsed the whole ring to a single question and made left/right look dead.
     const groups = [...card.querySelectorAll('[role="radiogroup"], [role="group"]')]
-      .filter((node) => node instanceof HTMLElement)
-      .filter((node) => node.getClientRects().length > 0 || (node.parentElement?.getClientRects().length ?? 0) > 0);
+      .filter((node) => node instanceof HTMLElement);
     const blockOf = (element) => {
       const options = optionButtons(element);
       const fields = [...element.querySelectorAll('textarea, input:not([type="hidden"]), [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]')]
@@ -1877,13 +1961,65 @@ export async function apply(ctx) {
       return blockOf(ownsOne ? parent : group);
     });
   };
-  /** The element the card cursor currently sits on, so the move is visible to the user. */
+  // Painting a class onto the shell's nodes loses the highlight whenever the card re-renders, which
+  // is what the user saw as a flicker. The class stays (harmless, and a static hint), while the
+  // visible cursor is our own overlay cursorRing, repositioned every frame and immune to that.
   let cursorMark = null;
+  let cursorRing = null;
+  let ringFrame = 0;
+  let paints = 0;
+  let marks = 0;
+  const ensureRing = () => {
+    if (cursorRing !== null && cursorRing.isConnected === true) return cursorRing;
+    cursorRing = document.createElement('div');
+    cursorRing.className = 'dsc-card-ring';
+    document.body.appendChild(cursorRing);
+    return cursorRing;
+  };
+  const placeRing = () => {
+    const node = ensureRing();
+    const target = cursorMark;
+    if (target === null || target.isConnected !== true || !onScreen(target)) {
+      node.style.display = 'none';
+      return;
+    }
+    const box = target.getBoundingClientRect();
+    const width = box.width > 0 ? box.width : 0;
+    const height = box.height > 0 ? box.height : 0;
+    if (width === 0 || height === 0) {
+      node.style.display = 'none';
+      return;
+    }
+    paints += 1;
+    node.style.display = 'block';
+    node.style.left = `${box.left - 2}px`;
+    node.style.top = `${box.top - 2}px`;
+    node.style.width = `${width + 4}px`;
+    node.style.height = `${height + 4}px`;
+  };
+  const runRing = () => {
+    if (ringFrame !== 0) return;
+    const step = () => {
+      placeRing();
+      if (cursorCard !== null && cursorCard.isConnected === true) {
+        ringFrame = window.requestAnimationFrame(step);
+        return;
+      }
+      ringFrame = 0;
+      if (cursorRing !== null) cursorRing.style.display = 'none';
+    };
+    ringFrame = window.requestAnimationFrame(step);
+  };
   const markCursor = (element) => {
-    if (cursorMark === element) return;
+    marks += 1;
+    if (cursorMark === element) {
+      runRing();
+      return;
+    }
     cursorMark?.classList?.remove('dsc-card-cursor');
     cursorMark = element;
     cursorMark?.classList?.add('dsc-card-cursor');
+    runRing();
   };
 
   /** Own cursor {card, question, item}: the shell paints selection, not focus. */
@@ -1906,6 +2042,10 @@ export async function apply(ctx) {
     if (cursorCard === card && cursorObserver !== null) return;
     cursorObserver?.disconnect();
     cursorCard = card;
+    // Report the shape on sight: a wrong assumption about the shell's DOM is then readable without
+    // asking anyone to press a key.
+    const shape = questionBlocks(card);
+    publish(`sessionCardsShape=b${shape.length}:o${shape.map((block) => block.options.length).join('.')}:t${shape.map((block) => block.targets.length).join('.')}`);
     if (typeof MutationObserver !== 'function') return;
     cursorObserver = new MutationObserver(() => window.requestAnimationFrame(repaintCursor));
     cursorObserver.observe(card, { childList: true, subtree: true });
@@ -1941,6 +2081,20 @@ export async function apply(ctx) {
     }
     return false;
   };
+  // The shell renders its own question navigation (labels from its eight dictionaries). Clicking it
+  // keeps the shell's flow in sync — far more reliable than a second question model on our side.
+  const STEP_LABELS = {
+    next: new Set(['下一题', 'Next question', 'Next', '次の質問', '次へ', 'Siguiente pregunta', 'Siguiente', 'Question suivante', 'Suivant', 'Nächste Frage', 'Weiter', 'Следующий вопрос', 'Далее', 'Próxima pergunta', 'Próximo']),
+    prev: new Set(['上一题', 'Previous question', '前の質問', 'Pregunta anterior', 'Question précédente', 'Vorherige Frage', 'Предыдущий вопрос', 'Pergunta anterior']),
+  };
+  const questionNavControl = (card, step) => {
+    const labels = step > 0 ? STEP_LABELS.next : STEP_LABELS.prev;
+    return [...card.querySelectorAll('button:not([disabled])')]
+      .filter((node) => onScreen(node) && node.getAttribute('role') !== 'radio' && node.getAttribute('role') !== 'checkbox')
+      .find((node) => labels.has((node.textContent ?? '').trim()) || labels.has((node.getAttribute('aria-label') ?? '').trim()))
+      ?? null;
+  };
+
   /**
    * A card counts as on screen when it has boxes: `offsetParent` is null both for hidden elements
    * and for anything inside a fixed overlay, which is exactly how the shell renders a dialog — the
@@ -1969,12 +2123,20 @@ export async function apply(ctx) {
     // shell's DOM from a wrong decision in here.
     watchCursor(card);
     const probeBlocks = questionBlocks(card);
-    trace(`?${event.code.replace('Arrow', '')}:cur=${questionCursor.block}.${questionCursor.index}:b${probeBlocks.length}:o${probeBlocks.map((block) => block.options.length).join('.')}:t${probeBlocks.map((block) => block.targets.length).join('.')}:a${document.activeElement?.tagName ?? '-'}`);
+    trace(`?${event.code.replace('Arrow', '')}:cur=${questionCursor.block}.${questionCursor.index}:mk${marks}:pt${paints}:b${probeBlocks.length}:o${probeBlocks.map((block) => block.options.length).join('.')}:t${probeBlocks.map((block) => block.targets.length).join('.')}:a${document.activeElement?.tagName ?? '-'}`);
     const active = document.activeElement;
     const field = editableField(active);
-    // While a question waits, the keys belong to it — except while the user is writing a message.
-    if (field !== null && !card.contains(field) && !fieldIsEmpty(field)) return;
     const inCardField = field !== null && card.contains(field);
+    const isArrow = event.code === 'ArrowUp' || event.code === 'ArrowDown'
+      || event.code === 'ArrowLeft' || event.code === 'ArrowRight';
+    if (!inCardField && field !== null && !fieldIsEmpty(field)) {
+      // The user is writing somewhere else. Typing keys (and Space) stay with that field, but the
+      // arrows still drive the card: handing them to the scroller moved the card out from under
+      // the user, which read as the cursor jumping to another box.
+      if (!isArrow) return;
+      const edge = event.code === 'ArrowUp' || event.code === 'ArrowLeft' ? 'start' : 'end';
+      if (!caretAtEdge(field, edge)) return; // the caret still has room in the text
+    }
     if (inCardField) {
       // Inside the card's own box: digits and Enter belong to it (the card submits on Enter), and
       // arrows leave only from the edge of the text.
@@ -2108,21 +2270,54 @@ export async function apply(ctx) {
       return;
     }
     if (event.code === 'ArrowLeft' || event.code === 'ArrowRight') {
-      // Left/right always switch questions, including questions whose controls are not reachable:
-      // those get their question block marked so the switch is still visible.
-      if (blockCount < 2) return;
-      const step = event.code === 'ArrowRight' ? 1 : -1;
-      const nextBlock = (block + step + blockCount) % blockCount;
-      const targets = blocks[nextBlock].targets;
-      const chosen = targets.find((node) => node.getAttribute('aria-checked') === 'true');
-      const target = chosen ?? targets[step > 0 ? 0 : targets.length - 1];
-      if (target === undefined) {
-        questionCursor = { key, block: nextBlock, index: -1 };
-        markCursor(blocks[nextBlock].element);
-        trace(`${event.code === 'ArrowRight' ? 'R' : 'L'}=q${nextBlock + 1}/${blockCount}:no-targets`);
+      // Left/right switch questions. The shell's own control comes first: it also advances whatever
+      // the shell shows, which is what the user sees as "the next question".
+      const navStep = event.code === 'ArrowRight' ? 1 : -1;
+      const navControl = questionNavControl(card, navStep);
+      if (navControl !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        navControl.click();
+        trace(`${navStep > 0 ? 'R' : 'L'}=shell-nav`);
         return;
       }
-      settle(target, nextBlock, targets.indexOf(target), 'follow');
+      if (blockCount < 2) return;
+      const step = navStep;
+      // Prefer the next question that can actually be answered, but always move: a question whose
+      // options the shell has not revealed yet still takes the cursor so paging is felt.
+      let landed = -1;
+      let target;
+      let stopAt = -1;
+      let chosenBlock = block;
+      for (let hop = 1; hop < blockCount; hop += 1) {
+        const candidate = (block + step * hop + blockCount * blockCount) % blockCount;
+        if (usable[candidate] > 0) {
+          chosenBlock = candidate;
+          const targets = blocks[candidate].targets;
+          const chosen = targets.find((node) => node.getAttribute('aria-checked') === 'true');
+          target = chosen ?? targets[step > 0 ? 0 : targets.length - 1];
+          landed = targets.indexOf(target);
+          break;
+        }
+        if (blocks[candidate].options.length > 0) {
+          // The question exists but its choices are not revealed yet: stop there so paging is felt,
+          // instead of wrapping back to the question the user is already on (which looked like
+          // left/right doing nothing at all).
+          stopAt = candidate;
+          break;
+        }
+      }
+      if (landed < 0 || target === undefined) {
+        const fallback = stopAt >= 0 ? stopAt : (block + step + blockCount) % blockCount;
+        questionCursor = { key, block: fallback, index: -1 };
+        event.preventDefault();
+        event.stopPropagation();
+        markCursor(blocks[fallback].element);
+        revealInScroller(blocks[fallback].element);
+        trace(`${step > 0 ? 'R' : 'L'}=q${fallback + 1}/${blockCount}:no-targets`);
+        return;
+      }
+      settle(target, chosenBlock, landed, 'follow');
     }
   };
 

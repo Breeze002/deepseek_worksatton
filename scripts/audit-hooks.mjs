@@ -57,7 +57,11 @@ if (problems.length > 0) {
 const text = source
   .join('\n')
   .replace(/\/\*[\s\S]*?\*\//gu, ' ')
-  .replace(/(^|[^:])\/\/[^\n]*/gu, '$1 ');
+  .replace(/(^|[^:])\/\/[^\n]*/gu, '$1 ')
+  // String literals hold CSS class names and messages, which are not bindings.
+  .replace(/'(?:[^'\\]|\\.)*'/gu, "''")
+  .replace(/"(?:[^"\\]|\\.)*"/gu, '""')
+  .replace(/`(?:[^`\\]|\\.)*`/gu, '``');
 const applyIndex = text.indexOf('export async function apply(');
 const modulePart = applyIndex < 0 ? text : text.slice(0, applyIndex);
 const applyPart = applyIndex < 0 ? '' : text.slice(applyIndex);

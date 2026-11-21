@@ -7,8 +7,9 @@ client.js
 # local npm cache used by this workspace
 .npm-cache/
 
-# visual check output (npm run verify:visual)
+# visual check output (npm run verify:visual) and Playwright's local cache
 artifacts/
+.playwright/
 
 # packed bundles and local logs
 *.tgz

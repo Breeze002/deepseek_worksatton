@@ -133,7 +133,7 @@ function placeIn(scroller, element, offset, height = 40) {
  *   card[data-question-key] > wrapper > [role=radiogroup|group] > div[data-option-row] > button
  * with the free-text row a *sibling* of the options container inside the same wrapper.
  */
-function buildQuestionCard({ key = 'q1', questions, clientHeight = 120, optionHeight = 40, gap = 4 }) {
+function buildQuestionCard({ key = 'q1', questions, clientHeight = 120, optionHeight = 40, gap = 4, nav = false }) {
   const card = document.createElement('div');
   card.setAttribute('data-question-key', key);
   const scroller = makeScrollable(document.createElement('div'), {
@@ -169,6 +169,15 @@ function buildQuestionCard({ key = 'q1', questions, clientHeight = 120, optionHe
       placeIn(scroller, button, offset, optionHeight);
       offset += optionHeight + gap;
       row.appendChild(button);
+      if (question.descriptions === true) {
+        // The shell puts a small copy/expand toggle inside the same option row.
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.setAttribute('aria-label', `${label} details`);
+        toggle.textContent = 'v';
+        row.appendChild(toggle);
+      }
       group.appendChild(row);
       buttons.push(button);
     }
@@ -183,7 +192,28 @@ function buildQuestionCard({ key = 'q1', questions, clientHeight = 120, optionHe
     }
     scroller.appendChild(wrapper);
   }
-  return { card, scroller, buttons, fields, wrappers };
+  let navigation = null;
+  if (nav === true) {
+    // The shell renders its own 上一题 / 下一题 controls; the labels come from its dictionaries.
+    const footer = document.createElement('div');
+    const prev = document.createElement('button');
+    prev.type = 'button';
+    prev.textContent = '上一题';
+    const next = document.createElement('button');
+    next.type = 'button';
+    next.textContent = '下一题';
+    const seen = { prev: 0, next: 0 };
+    prev.addEventListener('click', () => {
+      seen.prev += 1;
+    });
+    next.addEventListener('click', () => {
+      seen.next += 1;
+    });
+    footer.append(prev, next);
+    card.appendChild(footer);
+    navigation = { prev, next, seen };
+  }
+  return { card, scroller, buttons, fields, wrappers, nav: navigation };
 }
 
 /** An approval card shaped like the shell renders it: it answers only while focus is inside. */
@@ -235,6 +265,7 @@ const BOARD = {
 
 const registered = [];
 const opened = [];
+const commands = [];
 
 const context = {
   slots: {
@@ -272,7 +303,10 @@ const context = {
           ],
         },
       }),
-      execute: async () => ({ ok: true, value: BOARD }),
+      execute: async (command) => {
+        commands.push(command);
+        return { ok: true, value: BOARD };
+      },
     },
   },
   effect: (callback) => {
@@ -386,6 +420,23 @@ await React.act(async () => {
   addButton?.click();
 });
 check('clicking a board button opens its dialog', boardHost.querySelector('.dsc-modal') !== null);
+await React.act(async () => {
+  boardHost.querySelector('.dsc-modal')?.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+});
+
+console.log('board: members can be reordered, which changes the Alt+1…9 mapping');
+const firstRow = boardHost.querySelectorAll('.dsc-row')[0];
+check('rows offer move controls', firstRow?.querySelector('button[title="moveDown"]') !== null);
+await React.act(async () => {
+  firstRow?.querySelector('button[title="moveDown"]')?.click();
+});
+const move = commands.at(-1);
+check(
+  'the move-down control asks the host to reorder that member',
+  move?.action === 'moveMember' && move?.memberId === 'm1' && move?.toIndex === 1,
+  JSON.stringify(move),
+);
+check('the first row cannot move up', firstRow?.querySelector('button[title="moveUp"]')?.disabled === true);
 
 console.log('board: a slot hook that arrives late does not break the render');
 const lateHost = document.createElement('div');
@@ -452,6 +503,15 @@ check('and does not move the selection off it', preset.buttons[0].getAttribute('
 check('the cursor is visible on the first option', preset.buttons[0].classList.contains('dsc-card-cursor'));
 key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
 check('the second ArrowDown moves the cursor to the second option', preset.buttons[1].classList.contains('dsc-card-cursor'));
+await tick(40);
+const ring = document.querySelector('.dsc-card-ring');
+check('the cursor is painted by our own overlay ring', ring !== null && ring.style.display === 'block', `ring=${ring === null ? 'none' : ring.style.display}`);
+const ringBox = preset.buttons[1].getBoundingClientRect();
+check(
+  'the ring sits over the cursor item and follows it',
+  ring !== null && ring.style.left === `${ringBox.left - 2}px` && ring.style.top === `${ringBox.top - 2}px`,
+  `ring=${ring?.style.left},${ring?.style.top} target=${ringBox.left},${ringBox.top}`,
+);
 check('the visible cursor moved with it', preset.buttons[1].classList.contains('dsc-card-cursor') && !preset.buttons[0].classList.contains('dsc-card-cursor'));
 const beforeLeftRight = [active(), preset.buttons.map((button) => button.getAttribute('aria-checked')).join()];
 key(active() ?? document.body, { key: 'ArrowRight', code: 'ArrowRight' });
@@ -461,6 +521,65 @@ check(
   active() === beforeLeftRight[0] && preset.buttons.map((button) => button.getAttribute('aria-checked')).join() === beforeLeftRight[1],
 );
 preset.card.remove();
+
+console.log('question card: option rows with extra icon buttons still work');
+const described = buildQuestionCard({ key: 'q12', questions: [{ options: ['d1', 'd2'], descriptions: true }, { options: ['e1'], descriptions: true }] });
+document.body.appendChild(described.card);
+key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+check('the cursor lands on the choice, not on the row icon', described.buttons[0].classList.contains('dsc-card-cursor'));
+key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+check('and steps to the next choice only', described.buttons[1].classList.contains('dsc-card-cursor'), `marked=${[...described.card.querySelectorAll('.dsc-card-cursor')].map((node) => node.textContent).join()}`);
+key(active() ?? document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+check('right pages to the next answerable question', described.buttons[2].classList.contains('dsc-card-cursor'), `active=${active()?.textContent ?? 'none'}`);
+described.card.remove();
+
+console.log('question card: left/right drive the shell own question navigation');
+const navCard = buildQuestionCard({ key: 'q15', questions: [{ options: ['n1', 'n2'] }], nav: true });
+document.body.appendChild(navCard.card);
+key(active() ?? document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+check('right clicks the shell next-question control', navCard.nav?.seen.next === 1, JSON.stringify(navCard.nav?.seen));
+key(active() ?? document.body, { key: 'ArrowLeft', code: 'ArrowLeft' });
+check('left clicks the shell previous-question control', navCard.nav?.seen.prev === 1, JSON.stringify(navCard.nav?.seen));
+key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+check('the arrows still move inside the question', navCard.buttons[0].classList.contains('dsc-card-cursor'));
+navCard.card.remove();
+
+console.log('question card: the shell only reveals the current question');
+const flow = buildQuestionCard({ key: 'q14', questions: [{ options: ['f1', 'f2'] }, { options: ['s1', 's2'] }] });
+const flowGroups = [...flow.card.querySelectorAll('[role="radiogroup"], [role="group"]')];
+flowGroups[1].hidden = true; // a flow layout hides everything but the question in focus
+document.body.appendChild(flow.card);
+key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+check('the revealed question takes the cursor', flow.buttons[0].classList.contains('dsc-card-cursor'));
+const shapeEntry = [...registered]
+  .reverse()
+  .find((entry) => entry.name === 'contextMenu.content' && String(entry.options.key).startsWith('sessionCardsShape='));
+check(
+  'both questions are counted even while one is hidden',
+  String(shapeEntry?.options.key ?? '').includes('b2'),
+  String(shapeEntry?.options.key ?? ''),
+);
+key(active() ?? document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+check(
+  'right still moves to the hidden question instead of doing nothing',
+  flow.wrappers[1].classList.contains('dsc-card-cursor'),
+  `marked=${[...flow.card.querySelectorAll('.dsc-card-cursor')].map((node) => node.tagName).join()}`,
+);
+flowGroups[1].hidden = false; // the shell then reveals it
+key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+check('once revealed, the arrows work inside it', flow.buttons[2].classList.contains('dsc-card-cursor') || flow.buttons[3].classList.contains('dsc-card-cursor'));
+flow.card.remove();
+
+console.log('question card: paging skips questions the shell has not rendered');
+const gapped = buildQuestionCard({ key: 'q13', questions: [{ options: ['g1'] }, { options: [] }, { options: ['h1', 'h2'] }] });
+document.body.appendChild(gapped.card);
+key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+check('the cursor starts on the first question', gapped.buttons[0].classList.contains('dsc-card-cursor'));
+key(active() ?? document.body, { key: 'ArrowRight', code: 'ArrowRight' });
+check('right jumps over the empty one to the next answerable question', gapped.buttons[1].classList.contains('dsc-card-cursor'), `marked=${[...gapped.card.querySelectorAll('.dsc-card-cursor')].map((node) => node.textContent).join()}`);
+key(active() ?? document.body, { key: 'ArrowLeft', code: 'ArrowLeft' });
+check('left comes back to the answerable question', gapped.buttons[0].classList.contains('dsc-card-cursor'));
+gapped.card.remove();
 
 console.log('question card: a question without controls is never skipped');
 const collapsed = buildQuestionCard({ key: 'q4', questions: [{ options: [] }, { options: ['alpha', 'beta'] }] });
@@ -647,6 +766,22 @@ await tick(120);
 keyUp(multiline, { key: 'ArrowDown', code: 'ArrowDown' });
 check('at the end of the text the arrow is consumed for scrolling', atEnd.defaultPrevented, `prevented=${atEnd.defaultPrevented}`);
 
+console.log('scrolling: a pending card keeps the plain arrows');
+const cardPane = makeScrollable(document.createElement('div'), { top: 0, clientHeight: 200, scrollHeight: 2000 });
+document.body.appendChild(cardPane);
+pointerTarget = cardPane;
+window.dispatchEvent(new window.MouseEvent('pointermove', { clientX: 10, clientY: 10, bubbles: true }));
+const owningCard = buildQuestionCard({ key: 'q11', questions: [{ options: ['a1', 'a2'] }] });
+document.body.appendChild(owningCard.card);
+const beforeOwned = cardPane.scrollTop;
+key(owningCard.buttons[0], { key: 'ArrowDown', code: 'ArrowDown' });
+await tick(80);
+keyUp(owningCard.buttons[0], { key: 'ArrowDown', code: 'ArrowDown' });
+check('the pending card keeps the arrow instead of scrolling the pane', cardPane.scrollTop === beforeOwned, `scrollTop=${cardPane.scrollTop}`);
+check('and the card cursor still moves', owningCard.buttons.some((button) => button.classList.contains('dsc-card-cursor')));
+owningCard.card.remove();
+cardPane.remove();
+
 /* ------------------------------------------------------------------ result ------------------ */
 
 console.error = realConsole.error;
@@ -656,6 +791,12 @@ if (noise.length > 0) {
   console.log(`-- ${noise.length} runtime message(s) --`);
   for (const message of noise.slice(0, 10)) console.log(`  ${message}`);
   console.log('');
+}
+const swallowed = noise.filter((message) => message.startsWith('[jsdomError]'));
+if (swallowed.length > 0) {
+  console.error(`FAIL: ${swallowed.length} exception(s) were swallowed inside event listeners:`);
+  for (const message of swallowed.slice(0, 5)) console.error(`  ${message.split('\n')[0]}`);
+  process.exit(1);
 }
 if (failures.length > 0) {
   console.error(`FAIL: ${failures.length} of ${failures.length + passed} interaction checks failed`);

@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-cards",
-  "version": "0.8.5",
+  "version": "0.9.4",
   "private": true,
   "type": "module",
   "description": "Session card board: one card per member session, dispatch tasks and watch status",
@@ -27,8 +27,9 @@
   ],
   "scripts": {
     "build": "node scripts/build-client.mjs",
-    "verify": "node scripts/build-client.mjs && node scripts/audit-hooks.mjs && node scripts/smoke-client.mjs && node scripts/dom-test.mjs",
-    "verify:visual": "node scripts/visual-test.mjs"
+    "verify": "node scripts/build-client.mjs && node scripts/audit-hooks.mjs && node scripts/store-test.mjs && node scripts/smoke-client.mjs && node scripts/dom-test.mjs && node scripts/visual-test.mjs",
+    "verify:visual": "node scripts/visual-test.mjs",
+    "pack": "npm pack --cache ./.npm-cache"
   },
   "dsh": {
     "bundle": {
