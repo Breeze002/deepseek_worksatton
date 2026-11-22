@@ -22,16 +22,21 @@ export const setReportDiagnostic = (reporter) => {
   reportDiagnostic = reporter;
 };
 export const createPublisher = (ctx) => {
-  let marker;
+  // The marker slot is keyed, so several diagnostics can be readable at once: keeping a short
+  // history means a later report (a scroll, a gesture) cannot hide an earlier one.
+  const HISTORY = 8;
+  const live = [];
   const publish = (key) => {
     try {
-      marker?.();
-      marker = ctx.slots.register({ name: 'contextMenu.content', key }, () => null);
+      live.push(ctx.slots.register({ name: 'contextMenu.content', key }, () => null));
+      while (live.length > HISTORY) live.shift()?.();
     } catch {
       /* inspection only */
     }
   };
-  ctx.effect(() => () => marker?.(), 'session-cards: readiness marker');
+  ctx.effect(() => () => {
+    for (const dispose of live.splice(0)) dispose();
+  }, 'session-cards: readiness markers');
   return publish;
 };
 

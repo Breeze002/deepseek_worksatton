@@ -4,6 +4,7 @@ import { NS } from '../constants.js';
 import { CSS } from '../styles.js';
 import { Btn, Icon, MemberRow, revealInScroller } from './parts.js';
 import { AddMemberForm, CreateGroupForm, Modal, NewSessionForm } from './dialogs.js';
+import { reportDiagnostic } from '../diagnostics.js';
 import { getCurrentShellSessionId, getGroupChat, groupMembersOf, markMemberSeen, memberStatus, newCommandId, noteMemberStatus, setFocus, useController, useControllerState, useFocus, useSessionIndex, useUnread, enterFocus, exitFocus } from '../state.js';
 
 const h = React.createElement;
@@ -164,6 +165,9 @@ function Board({ ctx, slotProps }) {
     ...collect(root.querySelector('.dsc-members'), '.dsc-row-main:not([disabled])'),
   ];
   const rowActionsOf = (row) => (row === null ? [] : collect(row, '.dsc-icon-btn:not([disabled])'));
+
+  /** One line so a click and a shortcut are told apart when reading the markers. */
+  const publishChat = (how) => reportDiagnostic(`sessionCardsChat=${how}`);
 
   const onPanelKey = (event) => {
     if (dialog !== null) return;
@@ -329,6 +333,22 @@ function Board({ ctx, slotProps }) {
           group.goal ? h('p', { className: 'dsc-goal' }, group.goal) : null,
         )
       : null,
+    group === null
+      ? null
+      : h(
+          'button',
+          {
+            type: 'button',
+            className: 'dsc-btn',
+            title: `${t('groupChat')} (Alt+Shift+G)`,
+            onClick: () => {
+              publishChat('board-head');
+              void getGroupChat()?.open(group.id);
+            },
+          },
+          h(Icon, { name: 'users', size: 13 }),
+          t('groupChat'),
+        ),
     h(
       'div',
       { className: 'dsc-body' },
@@ -357,10 +377,16 @@ function Board({ ctx, slotProps }) {
                 key: '__chat__',
                 t,
                 member: { id: '__chat__', alias: t('groupChat'), title: t('groupChatHint') },
-                hint: 'Alt+G',
+                hint: 'Alt+Shift+G',
                 active: getCurrentShellSessionId() === group.chatSessionId,
-                onSelect: () => void getGroupChat()?.open(group.id),
-                onOpen: () => void getGroupChat()?.open(group.id),
+                onSelect: () => {
+                  publishChat('row');
+                  void getGroupChat()?.open(group.id);
+                },
+                onOpen: () => {
+                  publishChat('row');
+                  void getGroupChat()?.open(group.id);
+                },
               }),
               group.members.length === 0
                 ? h('p', { className: 'dsc-note', style: { padding: '10px 2px' } }, t('noMembers'))

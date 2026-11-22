@@ -127,6 +127,19 @@ function MemberPanel() {
       h('span', { className: 'dsc-mp-title', title: group.name }, group.name),
       h(
         'button',
+        {
+          type: 'button',
+          className: 'dsc-mp-chat',
+          title: `${t('groupChat')} (Alt+Shift+G)`,
+          onClick: () => {
+            reportDiagnostic('sessionCardsChat=panel-head');
+            void getGroupChat()?.open(group.id);
+          },
+        },
+        t('groupChat'),
+      ),
+      h(
+        'button',
         { type: 'button', className: 'dsc-mp-switch', onClick: () => setDismissed(true), title: t('showSessions') },
         t('showSessions'),
       ),
@@ -138,10 +151,16 @@ function MemberPanel() {
         key: '__chat__',
         t,
         member: { id: '__chat__', alias: t('groupChat'), title: t('groupChatHint') },
-        hint: 'Alt+G',
+        hint: 'Alt+Shift+G',
         active: currentSession === group.chatSessionId,
-        onSelect: () => void getGroupChat()?.open(group.id),
-        onOpen: () => void getGroupChat()?.open(group.id),
+        onSelect: () => {
+          reportDiagnostic('sessionCardsChat=panel-row');
+          void getGroupChat()?.open(group.id);
+        },
+        onOpen: () => {
+          reportDiagnostic('sessionCardsChat=panel-row');
+          void getGroupChat()?.open(group.id);
+        },
       }),
       group.members.map((member, index) =>
         h(MemberRow, {

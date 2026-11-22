@@ -22,7 +22,7 @@ const h = React.createElement;
 const zh = {
   createAndJoin: '创建并加入',
   creating: '创建中…',
-  focusHint: 'Alt+数字 切成员 · Alt+G 群聊 · Alt+↑↓ 上/下一个 · Alt+0 回看板',
+  focusHint: 'Alt+数字 切成员 · Alt+Shift+G 群聊 · Alt+↑↓ 上/下一个 · Alt+0 回看板',
   focusOn: '群视图',
   newBlank: '新建空白会话',
   newSessionHint: '选一个工作区，并为新会话起个名字',
@@ -80,7 +80,7 @@ const zh = {
 const en = {
   createAndJoin: 'Create and join',
   creating: 'Creating…',
-  focusHint: 'Alt+digit switches member · Alt+G group chat · Alt+↑↓ step · Alt+0 back to the board',
+  focusHint: 'Alt+digit switches member · Alt+Shift+G group chat · Alt+↑↓ step · Alt+0 back to the board',
   focusOn: 'Group view',
   newBlank: 'New blank session',
   newSessionHint: 'Pick a workspace and name the new session',

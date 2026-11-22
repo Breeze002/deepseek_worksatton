@@ -53,11 +53,12 @@ export function createKeyboardLayer(ctx, deps) {
       if (combo === null) return;
       if (combo === 'chat') {
         const group = activeGroup();
-        if (group === null) return;
         event.preventDefault();
         event.stopPropagation();
-        publish('sessionCardsChat=shortcut');
-        void getGroupChat()?.open(group.id);
+        publish(`sessionCardsChat=shortcut:group=${group === null ? 'none' : 'yes'}`);
+        const engine = getGroupChat();
+        if (engine === null || engine === undefined) publish('sessionCardsChat=no-engine');
+        void engine?.open(group?.id ?? null); // open() resolves it when the board is not ready
         return;
       }
       event.preventDefault();

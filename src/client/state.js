@@ -81,6 +81,10 @@ class Controller {
 
   /** The Session hosting one group's chat (created on first use, Host side). */
   async chatSession(groupId) {
+    if (typeof this.remote.chatSession !== 'function') {
+      // The Host half is Node code loaded when the plugin loads: a stale one is the usual cause.
+      throw new Error(`Host half has no chatSession (has ${Object.keys(this.remote).join(',') || 'nothing'})`);
+    }
     const result = await this.remote.chatSession({ groupId }, this.life.signal);
     if (!result.ok) throw result.error;
     return result.value;

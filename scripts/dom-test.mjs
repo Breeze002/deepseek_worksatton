@@ -1166,7 +1166,8 @@ cardPane.remove();
 console.log('group chat: a member-style row opens an ordinary Session');
 const chatRow = [...panel.querySelectorAll('.dsc-row')].find((row) => row.textContent.includes('groupChat'));
 check('the member list carries the group chat row', chatRow !== undefined && chatRow !== null);
-check('the row advertises the shortcut', chatRow.textContent.includes('Alt+G'));
+// Plain Alt+letter is commonly stolen on Linux, so the row advertises the safer variant.
+check('the row advertises the shortcut', chatRow.textContent.includes('Alt+Shift+G'), chatRow.textContent.slice(0, 60));
 const openedBefore = opened.length;
 await React.act(async () => {
   chatRow.querySelector('.dsc-row-main').click();
@@ -1288,6 +1289,16 @@ await tick(30);
 check('a click outside closes it', document.querySelector('.dsc-mention') === null);
 mentionField.remove();
 extrasHost.remove();
+
+console.log('group chat: Alt+G works from an unrelated Session too');
+await React.act(async () => {
+  publishSessions({ 'session-zzz': { id: 'session-zzz', retainedBy: { mainView: 1 } } });
+});
+await tick(60);
+opened.length = 0;
+key(document.body, { key: 'g', code: 'KeyG', altKey: true });
+await tick(100);
+check('the chat opens even when the board has no loaded group to name', opened.at(-1) === 'session-chat', JSON.stringify(opened));
 
 /* ------------------------------------------------------------------ result ------------------ */
 

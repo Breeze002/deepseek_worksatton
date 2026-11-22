@@ -114,10 +114,32 @@ export function createGroupChat(deps) {
 
   const seeded = new Set();
 
+  /** The group to act on: the named one, else the first the Host reports (the board may not be
+   *  loaded yet — a shortcut must not depend on a snapshot that has not arrived). */
+  const resolveGroup = async (groupId) => {
+    if (groupId !== null && groupId !== undefined) return groupId;
+    const controller = deps.controller?.();
+    if (controller === null || controller === undefined) return null;
+    try {
+      const options = await controller.options();
+      const group = (options?.groups ?? []).find((candidate) => candidate.archived !== true);
+      return group?.id ?? null;
+    } catch {
+      return null;
+    }
+  };
+
   /** Open (creating on first use) the group's chat Session in the shell. */
   const open = async (groupId) => {
     const controller = deps.controller?.();
+    deps.publish?.(`sessionCardsChatOpen=begin:${groupId ?? 'none'}:controller=${controller === null || controller === undefined ? 'no' : 'yes'}`.slice(0, 180));
     if (controller === null || controller === undefined) return null;
+    const resolved = await resolveGroup(groupId);
+    if (resolved === null) {
+      deps.publish?.('sessionCardsChatNoGroup');
+      return null;
+    }
+    groupId = resolved;
     try {
       const sessionId = await controller.chatSession(groupId);
       await follow(groupId); // routing starts the moment the chat is opened
@@ -129,7 +151,7 @@ export function createGroupChat(deps) {
         await prompt(sessionId, line);
         await silence(sessionId);
       }
-      deps.publish?.(`sessionCardsChatOpen=${sessionId}`.slice(0, 180));
+      deps.publish?.(`sessionCardsChat=open:${sessionId}`.slice(0, 180));
       deps.openSession?.(sessionId);
       return sessionId;
     } catch (failure) {

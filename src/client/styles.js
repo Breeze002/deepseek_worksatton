@@ -99,6 +99,9 @@ export const CSS = [
   '.dsc-chat-hint{margin:6px 0 0;font-size:10px;color:var(--dsw-alias-label-caption,GrayText);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   '.dsc-mp-head{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.18))}',
   '.dsc-mp-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600}',
+  '.dsc-mp-chat{flex:none;border:0;background:transparent;font:inherit;font-size:11px;font-weight:600;cursor:pointer;'
+    + 'padding:2px 7px;border-radius:6px;color:var(--dsw-alias-state-business-primary,#2f6fed)}',
+  '.dsc-mp-chat:hover{background:var(--dsw-alias-bg-hover,rgba(127,127,127,.14))}',
   '.dsc-mp-switch{flex:none;border:0;background:transparent;color:var(--dsw-alias-label-caption,GrayText);font:inherit;font-size:11px;'
     + 'cursor:pointer;padding:2px 6px;border-radius:6px}',
   '.dsc-mp-switch:hover{background:var(--dsw-alias-bg-hover,rgba(127,127,127,.14));color:var(--dsw-alias-label-primary,CanvasText)}',
