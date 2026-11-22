@@ -15,6 +15,10 @@ class Controller {
     this.state = EMPTY_STATE;
     this.listeners = new Set();
     this.life = new AbortController();
+    // `life` ends the moment the last polling surface unmounts, but a call the user starts from a
+    // conversation (a member shortcut, a submission) has to outlive that surface. Those calls ride
+    // `disposal`, which only `dispose()` ends.
+    this.disposal = new AbortController();
     this.running = false;
     this.attached = 0;
   }
@@ -49,7 +53,7 @@ class Controller {
   }
 
   async options() {
-    const result = await this.remote.options({}, this.life.signal);
+    const result = await this.remote.options({}, this.disposal.signal);
     if (!result.ok) throw result.error;
     return result.value;
   }
@@ -81,11 +85,7 @@ class Controller {
 
   /** The Session hosting one group's chat (created on first use, Host side). */
   async chatSession(groupId) {
-    if (typeof this.remote.chatSession !== 'function') {
-      // The Host half is Node code loaded when the plugin loads: a stale one is the usual cause.
-      throw new Error(`Host half has no chatSession (has ${Object.keys(this.remote).join(',') || 'nothing'})`);
-    }
-    const result = await this.remote.chatSession({ groupId }, this.life.signal);
+    const result = await this.remote.chatSession({ groupId }, this.disposal.signal);
     if (!result.ok) throw result.error;
     return result.value;
   }
@@ -94,7 +94,7 @@ class Controller {
     if (this.state.busy) throw new Error('busy');
     this.update({ busy: true, error: null });
     try {
-      const result = await this.remote.execute(command, this.life.signal);
+      const result = await this.remote.execute(command, this.disposal.signal);
       if (!result.ok) throw result.error;
       this.accept(result.value);
     } catch (error) {
@@ -108,7 +108,7 @@ class Controller {
   /** One snapshot at mount: the keyboard resolves members before any surface is opened. */
   async prime() {
     try {
-      const result = await this.remote.snapshot({}, this.life.signal);
+      const result = await this.remote.snapshot({}, this.disposal.signal);
       if (result.ok) this.accept(result.value);
     } catch {
       /* the surfaces retry; a failed prime must not disturb activation */
@@ -130,6 +130,7 @@ class Controller {
 
   dispose() {
     this.life.abort();
+    this.disposal.abort();
     this.listeners.clear();
   }
 }

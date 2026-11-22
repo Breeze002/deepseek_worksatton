@@ -281,11 +281,14 @@ let sessionIndex = {
 const prompts = [];
 const cancels = [];
 const chatStreams = new Map();
+// A Session that already holds history before the plugin ever watches it: the window a fresh
+// subscription sees is not empty, which is how a lazily armed handler can replay the past.
+const preloadedStreams = new Map();
 const sessionsService = {
   list: null,
   retain: (sessionId) => {
     const listeners = new Set();
-    let window = { entries: [], hasMore: false, revision: 0, change: { kind: 'append', entries: [] } };
+    let window = { entries: [...(preloadedStreams.get(sessionId) ?? [])], hasMore: false, revision: 0, change: { kind: 'append', entries: [] } };
     chatStreams.set(sessionId, {
       emit: (event) => {
         const entry = { type: 'event', event };
@@ -341,6 +344,20 @@ const publishSessions = (next) => {
   for (const listener of sessionListListeners) listener();
 };
 
+// The shell's `@`/`/` menu registry. The plugin contributes one `@` source for group-chat members,
+// so the assertions drive that source directly — no composer element is faked and no caret is
+// scraped, which is exactly the failure the old DOM-overlay picker had.
+const triggerSources = [];
+const inputTriggersService = {
+  registerSource: (source) => {
+    triggerSources.push(source);
+    return () => {
+      const index = triggerSources.indexOf(source);
+      if (index >= 0) triggerSources.splice(index, 1);
+    };
+  },
+};
+
 const context = {
   slots: {
     inject: (name, installer) => {
@@ -351,7 +368,10 @@ const context = {
       // Faithful to the real slot API: the disposer withdraws the contribution.
       const entry = { name: options?.name, options, component };
       registered.push(entry);
-      if (options?.name === 'contextMenu.content') publishedKeys.push(String(options?.key));
+      // The marker slot comes from the module itself: a hard-coded second copy silently stops
+      // matching the moment the publisher moves, which is how five marker assertions once went red.
+      // List slots key their cell with `id`; only keyed slots (such as `main`) take `key`.
+      if (options?.name === client.MARKER_SLOT) publishedKeys.push(String(options?.id ?? options?.key));
       return () => {
         const index = registered.indexOf(entry);
         if (index >= 0) registered.splice(index, 1);
@@ -383,7 +403,11 @@ const context = {
           ],
         },
       }),
-      chatSession: async () => ({ ok: true, value: 'session-chat' }),
+      // Faithful to the real Remote: a call issued on an already-aborted signal fails. Without this
+      // the mock cannot tell a call that rides the polling signal from one that outlives it.
+      chatSession: async (_request, signal) => (signal?.aborted === true
+        ? { ok: false, error: new Error('aborted') }
+        : { ok: true, value: 'session-chat' }),
       execute: async (command) => {
         commands.push(command);
         return { ok: true, value: BOARD };
@@ -400,6 +424,7 @@ const context = {
       return { openSession: (sessionId) => opened.push(sessionId), connectWorkspace: async () => 'session-new' };
     }
     if (name === 'layout') return { selectPanel: () => {} };
+    if (name === 'inputTriggers') return inputTriggersService;
     return undefined;
   },
   provide: () => {},
@@ -420,6 +445,11 @@ new Function('require', 'module', 'exports', source)(
   moduleUnderTest.exports,
 );
 const client = moduleUnderTest.exports;
+// Without this the marker assertions below would bind to nothing and fail for the wrong reason.
+if (typeof client.MARKER_SLOT !== 'string' || client.MARKER_SLOT === '') {
+  console.error('FAIL: the bundle did not export MARKER_SLOT, so marker assertions cannot bind');
+  process.exit(1);
+}
 await client.apply(context);
 await new Promise((done) => setTimeout(done, 5));
 
@@ -1161,6 +1191,79 @@ check('and the card cursor still moves', owningCard.buttons.some((button) => but
 owningCard.card.remove();
 cardPane.remove();
 
+console.log('scrolling: the shell own popup keeps the plain arrows');
+// The `@`/`/` trigger menu is a `role="listbox"` mounted only while it is open, and the composer is a
+// rich-text contentEditable. This listener is a window capture listener, so consuming the arrows
+// here made the member list impossible to navigate.
+const popupPane = makeScrollable(document.createElement('div'), { top: 0, clientHeight: 200, scrollHeight: 2000 });
+document.body.appendChild(popupPane);
+pointerTarget = popupPane;
+window.dispatchEvent(new window.MouseEvent('pointermove', { clientX: 10, clientY: 10, bubbles: true }));
+// The plugin reports why it did or did not take the key, so each case asserts the reason and not just
+// the absence of consumption — otherwise a case that never reaches the guard passes for free.
+const lastScroll = () => String([...publishedKeys].reverse().find((entry) => entry.startsWith('sessionCardsScroll=')) ?? 'none');
+const richComposer = document.createElement('div');
+richComposer.setAttribute('contenteditable', 'true');
+richComposer.setAttribute('tabindex', '-1');
+richComposer.innerHTML = '<p>@al</p>';
+// jsdom does not implement `isContentEditable`, and the plugin reads it to tell a rich-text composer
+// from a plain box. Without it the caret path is skipped entirely and every case below passes for
+// free — the same way the real menu bug stayed invisible.
+Object.defineProperty(richComposer, 'isContentEditable', { value: true, configurable: true });
+document.body.appendChild(richComposer);
+richComposer.focus();
+// A jsdom div is only focusable with a tabindex, and a silently unfocused composer would make both
+// of these cases pass for the wrong reason.
+check('the rich-text composer really holds focus', document.activeElement === richComposer, `active=${document.activeElement?.tagName ?? 'none'}`);
+const triggerMenu = document.createElement('div');
+triggerMenu.setAttribute('role', 'listbox');
+document.body.appendChild(triggerMenu);
+const paneBeforeMenu = popupPane.scrollTop;
+const menuArrow = key(richComposer, { key: 'ArrowDown', code: 'ArrowDown' });
+await tick(60);
+keyUp(richComposer, { key: 'ArrowDown', code: 'ArrowDown' });
+check(
+  'an open trigger menu keeps the arrow instead of scrolling',
+  menuArrow.defaultPrevented === false && lastScroll() === 'sessionCardsScroll=ArrowDown:held-by-shell-popup',
+  `prevented=${menuArrow.defaultPrevented} reason=${lastScroll()}`,
+);
+check('and the pane under the pointer did not move', popupPane.scrollTop === paneBeforeMenu, `scrollTop=${popupPane.scrollTop}`);
+triggerMenu.remove();
+// With the menu gone the same key scrolls again: the guard is about the menu, not about the composer.
+const afterMenu = key(richComposer, { key: 'ArrowDown', code: 'ArrowDown' });
+await tick(60);
+keyUp(richComposer, { key: 'ArrowDown', code: 'ArrowDown' });
+check(
+  'and closing the menu gives the arrow back to the scroller',
+  afterMenu.defaultPrevented && lastScroll() === 'sessionCardsScroll=ArrowDown:scrolling',
+  `prevented=${afterMenu.defaultPrevented} reason=${lastScroll()} blocks=${richComposer.querySelectorAll('p, div, li, br').length} text=${JSON.stringify(richComposer.textContent)}`,
+);
+richComposer.remove();
+popupPane.remove();
+
+console.log('scrolling: a rich-text composer keeps the arrow for the caret');
+const editor = document.createElement('div');
+editor.setAttribute('contenteditable', 'true');
+editor.setAttribute('tabindex', '-1');
+editor.innerHTML = '<p>alpha</p><p>beta</p>';
+Object.defineProperty(editor, 'isContentEditable', { value: true, configurable: true });
+document.body.appendChild(editor);
+editor.focus();
+check('the multi-paragraph composer really holds focus', document.activeElement === editor, `active=${document.activeElement?.tagName ?? 'none'}`);
+const caretRange = document.createRange();
+caretRange.setStart(editor.firstElementChild.firstChild, 2);
+caretRange.collapse(true);
+const selection = window.getSelection();
+selection.removeAllRanges();
+selection.addRange(caretRange);
+const editorArrow = key(editor, { key: 'ArrowDown', code: 'ArrowDown' });
+check(
+  'a paragraph below the caret keeps the arrow for the caret',
+  editorArrow.defaultPrevented === false && lastScroll() === 'sessionCardsScroll=ArrowDown:held-by-caret',
+  `prevented=${editorArrow.defaultPrevented} reason=${lastScroll()}`,
+);
+editor.remove();
+
 /* ------------------------------------------------------------------ 9. group chat ------------ */
 
 console.log('group chat: a member-style row opens an ordinary Session');
@@ -1220,75 +1323,144 @@ check(
 );
 check('and the chat agent is silenced again', cancels.includes('session-chat'), JSON.stringify(cancels));
 
-console.log('group chat: typing @ offers the members');
+console.log('group chat: a member that joined after the last follow still mirrors its answer');
+// The member is put on the board without re-running `follow` — exactly what happens when someone is
+// swapped in while the chat is already open. Its Session is therefore first touched by the mention
+// itself, and the mirror has to be armed right there: a lazy watch with a placeholder handler used
+// to keep that placeholder forever, so the member answered into the void.
+BOARD.groups[0].members.push({ id: 'm9', sessionId: 'session-new', alias: 'delta', title: 'newcomer', cwd: '/tmp/n' });
+prompts.length = 0;
 await React.act(async () => {
-  publishSessions({ 'session-chat': { id: 'session-chat', retainedBy: { mainView: 1 } } });
+  chatStreams.get('session-chat').emit({
+    type: 'user/message',
+    seq: 31,
+    time: Date.now(),
+    data: { message: [{ type: 'text', text: '@delta 帮我看下' }] },
+  });
 });
-await tick(60);
-// The mention list lives in the conversation-header seat, so that seat must be mounted.
-const extrasEntry = registered.find((entry) => entry.name === 'conversation.session.header.utilities');
-const extrasHost = document.createElement('div');
-document.body.appendChild(extrasHost);
-const extrasRoot = createRoot(extrasHost);
+await tick(80);
+check(
+  'the mention reaches the member that joined later',
+  prompts.some((entry) => entry.sessionId === 'session-new' && entry.text === '帮我看下'),
+  JSON.stringify(prompts.filter((entry) => entry.sessionId === 'session-new')),
+);
+prompts.length = 0;
 await React.act(async () => {
-  extrasRoot.render(React.createElement(extrasEntry.component));
+  chatStreams.get('session-new').emit({
+    type: 'assistant/message',
+    seq: 32,
+    time: Date.now(),
+    data: { message: [{ type: 'text', text: '已经看过了' }] },
+  });
 });
-const mentionField = document.createElement('textarea');
-mentionField.getBoundingClientRect = () => ({ left: 400, top: 600, width: 600, height: 80, right: 1000, bottom: 680 });
-document.body.appendChild(mentionField);
-const setField = (value, caret) => {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-  setter.call(mentionField, value);
-  mentionField.setSelectionRange(caret ?? value.length, caret ?? value.length);
-  mentionField.dispatchEvent(new window.Event('input', { bubbles: true }));
-};
+await tick(80);
+check(
+  'and its answer is mirrored into the chat Session',
+  prompts.some((entry) => entry.sessionId === 'session-chat' && entry.text === '@delta：已经看过了'),
+  JSON.stringify(prompts.filter((entry) => entry.sessionId === 'session-chat')),
+);
+BOARD.groups[0].members.pop();
+
+console.log('group chat: arming a mirror does not replay the answers that already happened');
+// This member's window already holds an older answer when the mention arms its mirror, so only what
+// arrives after the mention may be written into the chat.
+preloadedStreams.set('session-old', [
+  {
+    type: 'event',
+    event: { type: 'assistant/message', seq: 41, time: Date.now(), data: { message: [{ type: 'text', text: '很久以前的答复' }] } },
+  },
+]);
+BOARD.groups[0].members.push({ id: 'm10', sessionId: 'session-old', alias: 'epsilon', title: 'older', cwd: '/tmp/o' });
+prompts.length = 0;
 await React.act(async () => {
-  mentionField.focus();
-  setField('@al');
+  chatStreams.get('session-chat').emit({
+    type: 'user/message',
+    seq: 42,
+    time: Date.now(),
+    data: { message: [{ type: 'text', text: '@epsilon 在吗' }] },
+  });
+});
+await tick(80);
+prompts.length = 0;
+await React.act(async () => {
+  chatStreams.get('session-old').emit({
+    type: 'assistant/message',
+    seq: 43,
+    time: Date.now(),
+    data: { message: [{ type: 'text', text: '现在的答复' }] },
+  });
+});
+await tick(80);
+const replayed = prompts.filter((entry) => entry.sessionId === 'session-chat').map((entry) => entry.text);
+check(
+  'only the answer that followed the mention is mirrored',
+  replayed.includes('@epsilon：现在的答复') && !replayed.some((text) => text.includes('很久以前')),
+  JSON.stringify(replayed),
+);
+BOARD.groups[0].members.pop();
+preloadedStreams.delete('session-old');
+
+/* ------------------------------------ 9b. the member @ source (shell-owned menu) -------------- */
+
+console.log('member @ source: the group members are offered through the shell menu');
+const memberSource = triggerSources.find((source) => source.trigger === '@' && source.name === 'sessionCardsMembers');
+check(
+  'the plugin registers one @ source of its own',
+  memberSource !== undefined,
+  JSON.stringify(triggerSources.map((source) => `${source.trigger}${source.name}`)),
+);
+check('and only one, so the shipped @ source is not replaced', triggerSources.filter((source) => source.trigger === '@').length === 1);
+check('it leaves the group title row to the shell', memberSource?.showGroupTitle === false);
+check('and leads the shipped candidates inside a group chat', memberSource?.order === -1);
+// Defensive lookups: without a registered source every check below must report itself instead of
+// aborting the run on a TypeError, so the failure list names the cause.
+const candidatesWith = (sessionId, signal, query = '') => (memberSource?.candidates ?? (async () => []))(
+  { sessionId },
+  { query, position: 'inline', drilled: false, signal },
+);
+const candidatesFor = (sessionId, query = '') => candidatesWith(sessionId, new AbortController().signal, query);
+const inChat = await candidatesFor('session-chat');
+check('every member of the group chat is offered', inChat.length === 2, JSON.stringify(inChat.map((row) => row.name)));
+check('a row is named and labelled by the alias', inChat[0]?.name === 'alpha' && inChat[0]?.label === 'alpha', JSON.stringify(inChat[0]));
+check('its description is the member Session title', inChat[0]?.description === 'first', JSON.stringify(inChat[0]));
+check('and it carries the session glyph', inChat[0]?.icon === 'session', JSON.stringify(inChat[0]));
+const byAlias = await candidatesFor('session-chat', 'be');
+check('the typed query filters by alias', byAlias.length === 1 && byAlias[0].name === 'beta', JSON.stringify(byAlias.map((row) => row.name)));
+const byTitle = await candidatesFor('session-chat', 'fir');
+check('and a member is found by their Session title too', byTitle.length === 1 && byTitle[0].name === 'alpha', JSON.stringify(byTitle.map((row) => row.name)));
+check('a Session outside the group chat is offered nothing', (await candidatesFor('session-aaa')).length === 0);
+const abortedRequest = new AbortController();
+abortedRequest.abort();
+check('an aborted request answers nothing', (await candidatesWith('session-chat', abortedRequest.signal)).length === 0);
+check('a pick inserts the literal mention the router reads', memberSource?.onPick({ candidate: { name: 'alpha' } })?.text === '@alpha ');
+check('and a nameless pick inserts nothing', memberSource !== undefined && memberSource.onPick({ candidate: { name: '' } }) === undefined);
+check('the lexicon carries the member aliases', JSON.stringify(memberSource?.lexicon({ sessionId: 'session-chat' }) ?? []) === '["alpha","beta"]');
+check('and stays empty outside the group chat', (memberSource?.lexicon({ sessionId: 'session-aaa' }) ?? []).length === 0);
+check('the lexicon subscription hands back a disposer', typeof memberSource?.subscribeLexicon?.({ sessionId: 'session-chat' }, () => {}) === 'function');
+// The source reads the live snapshot rather than a copy, so a member added on the board becomes
+// addressable without re-registering anything.
+BOARD.groups[0].members.push({ id: 'm3', sessionId: 'session-ccc', alias: 'gamma', title: 'third', cwd: '/tmp/c' });
+check('a member added later is addressable at once', (memberSource?.lexicon({ sessionId: 'session-chat' }) ?? []).includes('gamma'));
+BOARD.groups[0].members.pop();
+
+/* ------------------------------------ 10. a shortcut outlives the surface it was pressed from -- */
+
+console.log('group chat: the shortcut works from a conversation after the board was left');
+// The board is the only surface that retains the polling, so leaving it aborts the polling signal.
+// A shortcut pressed from a conversation is an ordinary user action: it must not inherit a signal
+// that the surface it was pressed from had already ended.
+await React.act(async () => {
+  boardRoot.unmount();
 });
 await tick(40);
-const rows = () => [...document.querySelectorAll('.dsc-mention-row')].map((row) => row.textContent);
-check('the mention list appears and filters', rows().length === 1 && rows()[0].includes('@alpha'), JSON.stringify(rows()));
-check('and it is placed above the mentionField', document.querySelector('.dsc-mention') !== null);
-await React.act(async () => {
-  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-});
-await tick(40);
-check('choosing writes the alias back into the mentionField', mentionField.value === '@alpha ', JSON.stringify(mentionField.value));
-check('and the list closes', document.querySelector('.dsc-mention') === null);
-await React.act(async () => {
-  setField('@');
-});
-await tick(40);
-check('an empty query lists every member', rows().length === 2, JSON.stringify(rows()));
-const firstCursor = document.querySelector('.dsc-mention-row.is-cursor')?.textContent ?? '';
-await React.act(async () => {
-  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-});
-await tick(30);
-const secondCursor = document.querySelector('.dsc-mention-row.is-cursor')?.textContent ?? '';
-check('ArrowDown moves the cursor in the list', secondCursor !== firstCursor && secondCursor !== '', `${firstCursor} -> ${secondCursor}`);
-await React.act(async () => {
-  window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-});
-await tick(30);
-check('Escape closes the list', document.querySelector('.dsc-mention') === null);
-// The shell re-renders its composer while typing, which blurs the field for a moment: the list
-// must survive that, and only a click outside closes it.
-await React.act(async () => {
-  setField('@');
-});
-await tick(40);
-mentionField.blur();
-await tick(40);
-check('the list survives the composer losing focus', document.querySelector('.dsc-mention') !== null);
-await React.act(async () => {
-  document.body.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true }));
-});
-await tick(30);
-check('a click outside closes it', document.querySelector('.dsc-mention') === null);
-mentionField.remove();
-extrasHost.remove();
+opened.length = 0;
+key(document.body, { key: 'g', code: 'KeyG', altKey: true });
+await tick(80);
+check(
+  'Alt+G still opens the chat once the board is gone',
+  opened.at(-1) === 'session-chat',
+  JSON.stringify(opened.slice(-1)),
+);
 
 console.log('group chat: Alt+G works from an unrelated Session too');
 await React.act(async () => {

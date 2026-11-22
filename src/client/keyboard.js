@@ -190,6 +190,15 @@ export function createKeyboardLayer(ctx, deps) {
       const field = editableField(focused);
       const arrow = event.code === 'ArrowUp' || event.code === 'ArrowDown';
       const edge = event.code === 'ArrowUp' ? 'start' : 'end';
+      // The shell's own popup owns the plain arrows while it is open, and this listener is a window
+      // capture listener — so consuming here made the `@`/`/` menu impossible to navigate. The menu
+      // is a `role="listbox"` mounted only while it is up, so `role` alone identifies it.
+      // `caretAtEdge` cannot cover this case: a rich-text composer keeps its paragraphs in elements,
+      // so every arrow used to look like an exit at the edge of the draft.
+      if (plain && arrow && document.querySelector('[role="listbox"], [role="menu"]') !== null) {
+        held('held-by-shell-popup');
+        return;
+      }
       if (field !== null) {
         // Page keys never scroll out of a focused field.
         if (!arrow) {
@@ -495,7 +504,11 @@ export function createKeyboardLayer(ctx, deps) {
       }
       if (field instanceof HTMLElement && field.isContentEditable) {
         const text = field.textContent ?? '';
-        if (!text.includes('\n')) return true;
+        // A rich-text composer keeps its paragraphs in elements, so `textContent` carries no `\n`
+        // and a plain `includes('\n')` test read every draft as single-line — which handed the
+        // caret's own arrows to the scroller. Counting blocks is what tells them apart.
+        const blocks = field.querySelectorAll('p, div, li, br').length;
+        if (blocks <= 1 && !text.includes('\n')) return true;
         const selection = window.getSelection?.();
         if (selection === undefined || selection === null || selection.rangeCount === 0 || !selection.isCollapsed) return false;
         const range = selection.getRangeAt(0);

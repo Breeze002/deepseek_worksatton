@@ -29,6 +29,8 @@
 │  · Controller：attach/detach 引用计数（只有面板可见时才轮询）+ 断线重连
 │  · focus store：群视图开关与当前成员
 │  · 键盘层：window capture 上的成员键 / 提问卡片 / 滚动 / 审批
+│  · @ 成员菜单：ctx.get('inputTriggers').registerSource(…) —— 把群成员作为 shell 自己
+│               @ 候选菜单的一个"来源"（见 mention.js），不自绘浮层、不读 DOM
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -55,7 +57,15 @@
 | 操作到了**上一轮**已答过的卡片 | 用 `document.querySelector('[data-…-key]')` 取到第一张 | 取**最后一个可见**的待答卡片 |
 | 升级 DSH 后键盘增强失效 | 依赖宿主内部 DOM 标记（`data-question-key` / `data-approval-key` / `data-option-row`）与角色 | 只用 `data-*` 与 `role`，不认类名；失效时看板仍应可用 |
 | 全局输入/预览变卡 | 面板不可见时仍在轮询 | `attach/detach` 引用计数，只在可见时轮询 |
+| 在会话里按 **Alt+G**（或从面板外发起别的调用）**毫无反应**：无报错、无提示 | 面板级轮询信号 `life` 在最后一个面板卸载时就被 `abort()`，而"用户从会话发起的一次性调用"也复用了它 → 调用一发出便已是中止状态，被 `catch` 吞掉 | 一次性调用（`chatSession` / `execute` / `options` / `prime`）走 `disposal` 信号，只有 `dispose()` 才中止；`life` 只留给轮询循环（`src/client/state.js`）。回归用例：`dom-test.mjs` 末节"shortcut works after the board was left" |
+| 失败被静默吞掉，界面上什么都看不到 | 错误只写进 `publish()`，而它注册的 `contextMenu.content` 槽位在当前 DSH 里可能根本不存在（注册被 try/catch 吞掉） | 不能只靠 `sessionCards*` 标记判断"按键有没有触发"；用户可见的失败要有界面反馈 |
+| 群聊里按 `@` 出的是**普通文件/会话候选**，群成员一个都不出现 | 作曲框是 Lexical **`contentEditable`**，不是 `<textarea>`/`<input>`；自绘浮层按 `HTMLTextAreaElement` 识别输入框 → 永远认不到。同时 shell 自己的 `@` 菜单照常弹出，于是看到的全是它的候选 | 成员**不做浮层**，而是注册为 shell 的 `@` 触发器来源：`ctx.get('inputTriggers').registerSource(source)`（`src/client/mention.js`）；候选、过滤、插入、光标全归 shell |
+| 想往作曲框里写文本（回填别名等） | 直接改 `.value` 再手工派发 `input` 事件对 Lexical 无效 | 用官方原语 `inputActions.captureInsertion()` / `insertText(text, span)`；本插件的做法是让来源返回 `{ text: '@别名 ' }`，由 shell 自己插入 |
+| `@` 候选里的成员没过期数据、来源要能感知成员变动 | 来源若缓存一份成员表，看板改了它不会知道 | 来源只读 `latestBoardState` 实时快照（不拷贝），并用 `subscribeLexicon` 接 `Controller.subscribe` 触发重取 |
 | 改了代码页面没变化 | 忘了 `npm run build`（页面加载的是 `client.js`） | 改 `src/client/index.js` 后必须重建 |
+| **重建了、也刷新了，现象与没改一模一样**（连报错都没有） | DSH 的客户端模块图按 `mtime/ctime/size` 派生的 `rev` **钉住**每个 bundle，且"immutable + mismatched revisions rejected"；新字节进图的唯一入口是 HMR watch 调用的 `ClientModules.rebuilt(id)`，而该 watch 属 DSH 自己的 dev 链（需 `pnpm run dev:web`） | **Client 半改动也要重启 dsh web**；自查办法：读 `conversation.input.overlay` 的标记，连 `sessionCardsReady` 都没有就是页面还在跑旧 bundle |
+| 群里 `@成员` **消息发得出去，但成员的回复不显示** | `watch()` 里 `if (watched.has(sessionId)) return` 让**懒加载的占位 handler 永久占用**该会话。成员若是在上次 `follow` 之后才加入/换上，首次接触它的是 `prompt()` 的懒加载（空 handler）→ 随后 `follow()` 想装镜像 handler 被这行挡掉 → 成员的每条 `assistant/message` 都被空 handler 吞掉 | handler 按**名字占位**（同名覆盖，不同名并存）；并且**转发路径在把消息交给成员之前，先为该成员装上镜像 handler**（`src/client/chat.js`）。回归用例：dom-test "a member that joined after the last follow still mirrors its answer" |
+| 事后装配 handler 时，成员**历史回复被当成新流量刷进群聊** | `watch()` 新建条目的 `seen` 是空的，而事件窗口里已经带着该会话的历史；首个通知会把 `slice(-MAX_READ)` 的旧事件全部派发 | 订阅前用窗口现有的 `seq` 给 `seen` **播种**，只处理之后到达的事件（`src/client/chat.js`）。回归用例：dom-test "arming a mirror does not replay the answers that already happened" |
 
 ---
 
@@ -76,11 +86,16 @@ npm run verify   # build + audit + smoke + dom
 
 **写新测试时注意**：jsdom **没有布局引擎**——`offsetParent` / `clientHeight` / `scrollHeight` / `getBoundingClientRect` / `overflowY` 都需要在测试里用虚拟值补上（见 `scripts/dom-test.mjs` 里的 `makeScrollable` / `placeIn` / `scrollBoxes`）。派发按键要打在**当前聚焦元素**上（真实浏览器就是这样），否则卡片自身的处理器不会收到。
 
+**jsdom 还差两样会影响按键判定**（都踩过）：
+1. **不实现 `isContentEditable`**（取到 `undefined`）。键盘层用它区分富文本作曲框与普通盒子 —— 缺了它，contentEditable 分支被整段跳过，用例会"假通过"。测这类路径必须 `Object.defineProperty(el, 'isContentEditable', { value: true })`。
+2. `div` **不加 `tabindex` 就无法 `focus()`**，`document.activeElement` 不会变成它。用例里应补一条 `document.activeElement === el` 的自检，否则焦点悄悄不成立时后续断言全是假通过。
+3. 断言**别只看"有没有 preventDefault"**，要看插件自己发布的 `sessionCardsScroll=<键>:<原因>`：原因不对说明代码走的是另一条分支，"没被消费"可能只是因为压根没走到那一步。
+
 ---
 
 ## 4. 调试手段（不用开浏览器）
 
-客户端把状态写进一个**惰性占位符的 key**（`contextMenu.content`），用 `cordis_inspect_query`（client / Slots / `listSubTree`，root=`contextMenu.content`）即可读出：
+客户端把状态写进一组**惰性占位符**：**每种标记各占一个 cell**，cell 的 id 就是标记原文（`diagnostics.js` 的 `MARKER_SLOT`）。用 `cordis_inspect_query`（client / Slots / `listSubTree`，root=`conversation.input.overlay`）读出 occupants 即可，等价于一块实时状态板：
 
 | 标记 | 含义 |
 | --- | --- |
@@ -93,14 +108,30 @@ npm run verify   # build + audit + smoke + dom
 | `sessionCardsQ=<code>:blocks/opts/targets/active` | 提问卡片**每次按键看到的 DOM 形状**（判断"宿主结构变了"最有用） |
 | `sessionCardsQ=…:q?/?i?/?:scroll±N` | 光标落点与滚动量 |
 | `sessionCardsTrace=…` | 最近的按键-动作轨迹（滚动窗口） |
+| `sessionCardsMentionService=<present｜absent-at-apply｜ready｜no-registerSource>` | `@` 来源注册链路走到哪一步（`ready` = 服务已就绪并注册） |
+| `sessionCardsMentionSourceError=<msg>` | 注册被拒（如来源重名） |
+| `sessionCardsMentionAsked=members:N` | **shell 真的来问我们要候选了**，N=该会话认到的成员数（`N=0` 说明当前会话不是群聊会话） |
+| `sessionCardsMentionPick=<alias>` | 用户选中了某个成员 |
+
+> ⚠️ **`MARKER_SLOT` 必须是当前 DSH 真正声明了的槽位，而且注册字段名要对。**
+> 一、槽位：曾经用的 `contextMenu.content` 在 DSH 0.2.1-rc.2 里**不存在**，注册抛错又被 try/catch 吞掉 → 所有标记（包括所有失败报告）全部无声消失。这正是当初"按了没反应又查不到原因"的根源。
+> 二、字段名：**列表槽位用 `id`，键控槽位才用 `key`**。`main` 是键控槽位（`key: PANEL_ID`），而 `sidebar.panellist` / `conversation.*` 都是列表槽位、一律用 `id`（看 `catalog.registration`：required 的就是 `id`）。用错字段同样被 try/catch 吞掉、同样毫无痕迹 —— 这一条又白花了一次重启才定位到。
+> 改槽位时同步检查 `scripts/smoke-client.mjs` 的 `required` 列表与标记读取字段，以及 `dom-test.mjs`（它从 bundle 导出的 `MARKER_SLOT` 取值，不再硬编码第二份）。
+> 其余可用真实槽位：`conversation.input.overlay`（作曲卡片内浮动条目，shell 自己的 `@`/`/` 菜单 occupant `slash-menu` 也在这里）、`conversation.composer.dock`、`conversation.session.header.utilities`（`session-cards-reading-anchor`）。
 
 ---
 
 ## 5. 安装与发布
 
-- **开发期**：装**目录**（`Plugins → Add plugin` 选本目录）→ 链接语义 → 改 `src/client/index.js` 后 `npm run build` + 刷新页面即可；
+- **开发期**：装**目录**（`Plugins → Add plugin` 选本目录）→ 链接语义 → 改 `src/client/index.js` 后 `npm run build`，**然后重启 dsh web**（见下）；
 - **交付**：`npm pack` 生成 `.tgz`；安装方用 `install_bundle` 指 tgz 或目录；tarball 安装会**钉版本号**；
 - Host 半改动、以及改动 `cordis.patch.yml` / `package.json`，**需要重启 dsh web**；
+- ⚠️ **Client 半改动在本机 DSH（0.2.1-rc.2）下同样需要重启 dsh web，刷新页面无效。**
+  原因在 `@deepseek-ai/dsh-client-modules`：客户端模块图把每个 bundle 钉在由**文件 `mtime/ctime/size`** 派生的 `rev` 上，且按 "versioned code is immutable；mismatched revisions are rejected instead of serving newer bytes" 服务；
+  而**唯一**能让新字节进入该图的入口是 `ClientModules.rebuilt(id)`，其注释写明它是 *"the HMR watch's registration hook — the only entry point through which build changes reach the graph"*。
+  那个 watch 属于 DSH 自己的 dev 构建链（需要 `pnpm run dev:web`），开发本插件时并不在跑。
+  所以 `npm run build` 之后：磁盘变了、图的 `rev` 没变 → 页面请求旧 `rev`、拿回旧字节，**现象与没改一模一样，且没有任何报错**。
+  判断依据（可自查）：改完后用 `cordis_inspect_query`（client / Slots / `listSubTree`，root=`conversation.input.overlay`）读标记 —— 若连 `sessionCardsReady` 都不出现，就说明页面跑的还是旧 bundle，不是你的代码有问题。
 - Plugins 详情页：有 `meta.detail`（如 `docs/DETAIL.md`）就显示它，否则回退显示**本包 README**。
 
 ---

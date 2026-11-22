@@ -21,22 +21,34 @@ function sessionTitleFrom(groups, sessionId) {
 export const setReportDiagnostic = (reporter) => {
   reportDiagnostic = reporter;
 };
+/**
+ * The slot the marker occupies. It must be a slot this DSH actually declares: the shipped
+ * `contextMenu.content` is absent here, so registering into it threw, the throw was swallowed by
+ * design, and every marker — including every failure report — became invisible.
+ * `conversation.input.overlay` is declared (floating entries inside the composer card) and an inert
+ * occupant there renders nothing.
+ */
+export const MARKER_SLOT = 'conversation.input.overlay';
 export const createPublisher = (ctx) => {
-  // The marker slot is keyed, so several diagnostics can be readable at once: keeping a short
-  // history means a later report (a scroll, a gesture) cannot hide an earlier one.
-  const HISTORY = 8;
-  const live = [];
+  // One live cell per marker kind (`<kind>=<detail>`), so a chatty marker such as
+  // `sessionCardsFollow` cannot overwrite the one being investigated. Inspection then reads a
+  // status board instead of a single latest value.
+  const markers = new Map();
   const publish = (key) => {
+    const kind = String(key).split('=')[0];
     try {
-      live.push(ctx.slots.register({ name: 'contextMenu.content', key }, () => null));
-      while (live.length > HISTORY) live.shift()?.();
+      markers.get(kind)?.();
+      // A LIST slot keys its cell with `id`; `key` belongs to keyed slots such as `main`. Registering
+      // a list slot with `key` never lands, and the catch below hides that — which cost a restart.
+      markers.set(kind, ctx.slots.register({ name: MARKER_SLOT, id: String(key) }, () => null));
     } catch {
       /* inspection only */
     }
   };
   ctx.effect(() => () => {
-    for (const dispose of live.splice(0)) dispose();
-  }, 'session-cards: readiness markers');
+    for (const dispose of markers.values()) dispose?.();
+    markers.clear();
+  }, 'session-cards: readiness marker');
   return publish;
 };
 

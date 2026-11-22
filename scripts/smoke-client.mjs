@@ -22,6 +22,8 @@ const selectedPanels = [];
 const keyHandlers = [];
 const provided = [];
 const effects = [];
+// The composer menu's trigger sources, as the shell's `inputTriggers` service would collect them.
+const triggerSources = [];
 let mounted = null;
 
 const BOARD = {
@@ -144,6 +146,14 @@ const context = {
   get: (name) => {
     if (name === 'uiWorkspace') return { openSession: (sessionId) => openedSessions.push(sessionId) };
     if (name === 'layout') return { selectPanel: (panelId) => selectedPanels.push(panelId) };
+    if (name === 'inputTriggers') {
+      return {
+        registerSource: (source) => {
+          triggerSources.push(source);
+          return () => {};
+        },
+      };
+    }
     return undefined;
   },
   provide: (name, value) => {
@@ -193,10 +203,17 @@ try {
 }
 
 const names = registered.map((entry) => entry.name);
-const required = ['main', 'sidebar.panellist', 'contextMenu.content'];
+// The marker slot must be one this DSH declares: `contextMenu.content` is absent, which silently
+// swallowed every marker until the publisher was moved to the composer overlay.
+const required = ['main', 'sidebar.panellist', 'conversation.input.overlay'];
 const missing = required.filter((name) => !names.includes(name));
 if (missing.length > 0) {
   console.error(`FAIL: missing registrations: ${missing.join(', ')} (saw: ${names.join(', ')})`);
+  process.exit(1);
+}
+const memberSource = triggerSources.find((source) => source.trigger === '@' && source.name === 'sessionCardsMembers');
+if (memberSource === undefined) {
+  console.error(`FAIL: the @ member source was not registered (saw: ${triggerSources.map((source) => source.trigger + source.name).join(', ') || 'none'})`);
   process.exit(1);
 }
 if (namespaceSeen !== 'session-cards') {
@@ -227,7 +244,7 @@ for (const handler of keyHandlers) handler(event);
 // A switch that also has to enter the group view navigates one tick later, after the shell settles.
 await new Promise((done) => setTimeout(done, 10));
 if (!openedSessions.includes('session-bbb')) {
-  const markers = registered.filter((entry) => entry.name === 'contextMenu.content').map((entry) => entry.options.key);
+  const markers = registered.filter((entry) => entry.name === exported.MARKER_SLOT).map((entry) => entry.options.id);
   console.error(`FAIL: Alt+2 did not open member 2 (opened: ${JSON.stringify(openedSessions)})`);
   console.error(`  markers: ${JSON.stringify(markers.slice(-4))}`);
   console.error(`  key listeners: ${keyHandlers.length}, panels: ${JSON.stringify(selectedPanels)}`);
