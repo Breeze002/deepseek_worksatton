@@ -8,7 +8,6 @@
 import React from 'react';
 import { NS } from '../constants.js';
 import { focusCtx, memberOfSession, useController, useControllerState } from '../state.js';
-import { MentionPicker } from '../mention.js';
 
 const h = React.createElement;
 
@@ -35,8 +34,10 @@ function SessionRowAlias(props) {
  * conversation's own scroller instead of guessing from geometry alone.
  */
 function ReadingAnchor() {
-  // The anchor is always mounted with a Session, which also makes it the seat for the mention list.
-  return h(React.Fragment, null, h('span', { className: 'dsc-reading-anchor', 'aria-hidden': true }), h(MentionPicker));
+  // The anchor is always mounted with a Session. The `@member` list is no longer drawn here: it is
+  // contributed to the shell's own composer menu as a trigger source (see `mention.js`), which is
+  // why this seat no longer has to guess the composer's element or the current Session.
+  return h('span', { className: 'dsc-reading-anchor', 'aria-hidden': true });
 }
 
 export { SessionRowAlias, ReadingAnchor };

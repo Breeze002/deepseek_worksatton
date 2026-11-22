@@ -71,16 +71,6 @@ export const CSS = [
   '.dsc-member-panel{position:fixed;z-index:40;display:flex;flex-direction:column;box-sizing:border-box;'
     + 'background:var(--dsw-alias-bg-base,Canvas);border-right:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.2));'
     + 'color:var(--dsw-alias-label-primary,CanvasText);font:inherit}',
-  '.dsc-mention{position:fixed;z-index:60;display:flex;flex-direction:column;gap:1px;padding:4px;box-sizing:border-box;'
-    + 'border:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.24));border-radius:8px;'
-    + 'background:var(--dsw-alias-bg-elevated,Canvas);box-shadow:0 6px 24px rgba(0,0,0,.28);max-height:240px;overflow-y:auto}',
-  '.dsc-mention-hint{padding:2px 6px 4px;font-size:10px;color:var(--dsw-alias-label-caption,GrayText)}',
-  '.dsc-mention-row{display:flex;align-items:baseline;gap:8px;padding:4px 8px;border:0;border-radius:6px;background:transparent;'
-    + 'color:var(--dsw-alias-label-primary,CanvasText);font:inherit;font-size:12px;text-align:left;cursor:pointer}',
-  '.dsc-mention-row.is-cursor{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#2f6fed) 16%,transparent)}',
-  '.dsc-mention-alias{flex:none;font-weight:600}',
-  '.dsc-mention-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
-    + 'font-size:11px;color:var(--dsw-alias-label-caption,GrayText)}',
   '.dsc-chat{display:flex;flex-direction:column;gap:0;min-height:0;flex:1;padding:0 14px 10px}',
   '.dsc-chat-head{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.18))}',
   '.dsc-chat-title{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',

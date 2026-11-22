@@ -50,21 +50,38 @@ export function userText(event) {
 }
 
 export function createGroupChat(deps) {
-  const watched = new Map(); // sessionId -> { reference, unsubscribe, seen }
+  // sessionId -> { reference, unsubscribe, seen: Set<seq>, handlers: Map<name, fn> }
+  const watched = new Map();
 
   const sessions = () => deps.sessions?.() ?? null;
 
-  const watch = async (sessionId, onEvent) => {
+  /**
+   * Start (or re-point) one named handler on a Session's event stream. The name matters: a Session
+   * could be watched lazily before its real handler was known, and the earlier `if (watched.has(…))
+   * return` kept that placeholder forever — which is how a member's answers stopped being mirrored.
+   * Naming the slot also makes a repeated `follow` replace its handler instead of stacking a copy.
+   */
+  const watch = async (sessionId, name, onEvent) => {
     const service = sessions();
     if (service === null || service === undefined) return;
-    if (watched.has(sessionId)) return;
-    const entry = { reference: null, unsubscribe: null, seen: new Set() };
+    const existing = watched.get(sessionId);
+    if (existing !== undefined) {
+      existing.handlers.set(name, onEvent);
+      return;
+    }
+    const entry = { reference: null, unsubscribe: null, seen: new Set(), handlers: new Map([[name, onEvent]]) };
     watched.set(sessionId, entry);
     try {
       const reference = service.retain(sessionId, { source: 'gateway' });
       entry.reference = reference;
       await reference.ready;
       const source = reference.binding.eventSource;
+      // Seed whatever the window already holds, so arming a handler later cannot replay history as
+      // new traffic — otherwise a member armed at mention time would dump its older answers into the
+      // chat the moment it next speaks.
+      for (const item of source.getSnapshot()?.entries ?? []) {
+        if (item?.type === 'event' && item.event?.seq !== undefined) entry.seen.add(item.event.seq);
+      }
       entry.unsubscribe = source.subscribe(() => {
         const window = source.getSnapshot();
         for (const item of (window?.entries ?? []).slice(-MAX_READ)) {
@@ -72,7 +89,7 @@ export function createGroupChat(deps) {
           const event = item.event;
           if (entry.seen.has(event?.seq)) continue;
           entry.seen.add(event?.seq);
-          void onEvent(event, reference);
+          for (const handler of entry.handlers.values()) void handler(event, reference);
         }
       });
     } catch (failure) {
@@ -87,7 +104,7 @@ export function createGroupChat(deps) {
     try {
       let entry = watched.get(sessionId);
       if (entry === undefined) {
-        await watch(sessionId, () => {});
+        await watch(sessionId, 'keepalive', () => {});
         entry = watched.get(sessionId);
       }
       const reference = entry?.reference;
@@ -146,6 +163,34 @@ export function createGroupChat(deps) {
     watched.clear();
   };
 
+  /** Route one member's settled answer back into the chat Session as a line. */
+  const mirrorFrom = (chatId, member) => async (event) => {
+    if (event.type !== 'assistant/message') return;
+    const text = assistantText(event);
+    if (text === '') return;
+    await prompt(chatId, `@${member.alias}：${text}`);
+    await silence(chatId);
+  };
+
+  /**
+   * Route one mention in the chat Session into the named member's Session.
+   *
+   * The mirror handler for that member is installed here, before the message is handed over: a member
+   * can join the group after the last `follow`, and if its Session is first watched lazily (by the
+   * prompt itself) its answers would be routed to a placeholder that never mirrors them.
+   */
+  const forwardFrom = (chatId, groupId) => async (event) => {
+    if (event.type !== 'user/message') return;
+    const text = userText(event);
+    if (text === '') return;
+    const named = mentionedMember(text, deps.membersOf?.(groupId) ?? []);
+    if (named === null) return;
+    await watch(named.sessionId, 'mirror', mirrorFrom(chatId, named));
+    const body = text.replace(new RegExp(`@${escapeRegExp(named.alias)}`, 'iu'), '').trim();
+    if (body !== '') await prompt(named.sessionId, body);
+    await silence(chatId);
+  };
+
   /** Start routing for one group: watch its chat Session and every member it may address. */
   const follow = async (groupId) => {
     const controller = deps.controller?.();
@@ -156,25 +201,9 @@ export function createGroupChat(deps) {
     } catch {
       return; // no chat Session yet: it is created when the user opens the chat
     }
-    const members = deps.membersOf?.(groupId) ?? [];
-    await watch(chatId, async (event) => {
-      if (event.type !== 'user/message') return;
-      const text = userText(event);
-      if (text === '') return;
-      const named = mentionedMember(text, deps.membersOf?.(groupId) ?? []);
-      if (named === null) return;
-      const body = text.replace(new RegExp(`@${escapeRegExp(named.alias)}`, 'iu'), '').trim();
-      if (body !== '') await prompt(named.sessionId, body);
-      await silence(chatId);
-    });
-    for (const member of members) {
-      await watch(member.sessionId, async (event) => {
-        if (event.type !== 'assistant/message') return;
-        const text = assistantText(event);
-        if (text === '') return;
-        await prompt(chatId, `@${member.alias}：${text}`);
-        await silence(chatId);
-      });
+    await watch(chatId, 'forward', forwardFrom(chatId, groupId));
+    for (const member of deps.membersOf?.(groupId) ?? []) {
+      await watch(member.sessionId, 'mirror', mirrorFrom(chatId, member));
     }
   };
 

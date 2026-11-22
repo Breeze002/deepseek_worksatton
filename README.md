@@ -113,8 +113,9 @@ node scripts/dom-test.mjs   # 只跑交互测试（内存构建，不写文件�
 
 它的产物（截图与样式对比）写在 `artifacts/`，不入库。
 
-- 每次改 `src/client/index.js` **必须先 `npm run build`**，否则页面加载的还是旧 bundle；
-- Host 半（`index.js` / `lib/*`）改动需要**重启 dsh web** 才生效；Client 半改动只需重建 + 刷新页面。
+- 每次改 `src/client/index.js` **必须先 `npm run build`**，否则磁盘上还是旧 bundle；
+- Host 半（`index.js` / `lib/*`）改动需要**重启 dsh web** 才生效；
+- ⚠️ **Client 半改动也需要重启 dsh web**（本机实测，DSH 0.2.1-rc.2）——**刷新页面不够**，见 `DEVELOPMENT.md` 第 5 节。
 
 ---
 

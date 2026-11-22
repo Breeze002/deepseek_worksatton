@@ -143,10 +143,14 @@ import { Board } from './view/board.js';
 import { SidebarEntry } from './view/entry.js';
 import { ReadingAnchor, SessionRowAlias } from './view/status.js';
 import { PanelBoundary, createPublisher, setReportDiagnostic } from './diagnostics.js';
+// Re-exported so a test binds to the marker slot instead of hard-coding a second copy of the name;
+// the previous copy (`contextMenu.content`) is exactly what made this invisible.
+export { MARKER_SLOT } from './diagnostics.js';
 import { Controller, currentSessionIdOf, describeFollow, followProbe, newCommandId, setController, getController, groupOfSession, latestBoardState, memberOfSession, setGroupChat, setSessionIndex, setFocus, setFocusCtx, setNavActions, pushSessionHistory, getCurrentShellSessionId, setCurrentShellSessionId, subscribeCurrentSession, runtimeListeners } from './state.js';
 import { createKeyboardLayer } from './keyboard.js';
 import { createReadingMemory } from './reading.js';
 import { createGroupChat } from './chat.js';
+import { createMemberMentionSource } from './mention.js';
 
 export const inject = ['slots', 'locale', 'remote'];
 
@@ -325,6 +329,38 @@ export async function apply(ctx) {
 
   // The window keyboard layer: member switching, question cards, approvals and scrolling.
   createKeyboardLayer(ctx, { publish });
+
+  // The composer's `@` menu belongs to the shell; members are contributed into it as one trigger
+  // source, so the pick list, the caret and the insertion all stay the shell's business.
+  //
+  // `inject`, not `get`: the trigger service may be registered after this plugin's own apply runs,
+  // and a one-shot `get` would then miss it forever — silently, because the guard has nowhere to
+  // report to. The marker recorded first is what makes that difference visible from inspection.
+  publish(`sessionCardsMentionService=${ctx.get('inputTriggers')?.registerSource ? 'present' : 'absent-at-apply'}`);
+  const mentionJob = ctx.inject(['inputTriggers'], (triggerCtx) => {
+    const api = triggerCtx.get('inputTriggers');
+    if (api?.registerSource === undefined) {
+      publish('sessionCardsMentionService=no-registerSource');
+      return undefined;
+    }
+    publish('sessionCardsMentionService=ready');
+    return api.registerSource(createMemberMentionSource({
+      board: () => latestBoardState,
+      subscribe: (listener) => {
+        const controller = getController();
+        if (controller === null || controller === undefined) return () => {};
+        return controller.subscribe(listener);
+      },
+      publish,
+    }));
+  });
+  // `inject` waits for the service, so this must not be awaited — but a rejected registration
+  // (a duplicate source name, for one) has to reach the inspection marker instead of vanishing.
+  if (mentionJob !== null && typeof mentionJob?.catch === 'function') {
+    mentionJob.catch((failure) => {
+      publish(`sessionCardsMentionSourceError=${String(failure?.message ?? failure).slice(0, 90)}`);
+    });
+  }
 
   } catch (failure) {
     publish(`sessionCardsWiringError=${(failure instanceof Error ? failure.message : String(failure)).slice(0, 90)}`);
