@@ -116,8 +116,19 @@ for (const file of perFile) {
 if (conditionalProblems.length > 0) {
   console.error('FAIL: a React hook is called conditionally (error #310):');
   for (const problem of conditionalProblems) console.error(`  ${problem}`);
+process.exit(1);
+}
+
+/* ------------------------------------------------------------------ budgets ----------------- */
+// The plugin polls the session index once a second; anything more would be a load-time cost that is
+// easy to add by accident and hard to notice. A group switch must never introduce a new timer.
+const clientSources = perFile.map((file) => file.source.join('\n')).join('\n');
+const intervals = [...clientSources.matchAll(/setInterval\(/gu)].length;
+if (intervals > 1) {
+  console.error(`FAIL: client code declares ${intervals} intervals; the budget is 1`);
   process.exit(1);
 }
+console.log('PASS: the plugin keeps a single interval (no polling added)');
 
 console.log('PASS: no React hook follows a top-level early return');
 console.log('PASS: no component reaches into apply-scope bindings');

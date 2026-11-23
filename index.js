@@ -15,7 +15,7 @@ import { Service } from '@deepseek-ai/cordis';
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { commandSchema, newId } from './lib/model.js';
+import { commandSchema, newId, uiStatePatchSchema, uiStateSchema } from './lib/model.js';
 import { remoteInfo } from './lib/rpc.js';
 import { CardStore } from './lib/store.js';
 
@@ -87,14 +87,47 @@ export default class SessionCardsService extends TypertRemoteService {
       if (!storage) throw new Error('缺少 storage 服务');
       const backend = storage.backend.get(this.config.backend ?? 'json');
       if (!backend?.kv) throw new Error('存储后端不提供 KV unit');
+      /**
+       * Open a unit, tolerating a hot reload.
+       *
+       * On a plugin reload the previous instance's disposer can run *after* the new instance boots,
+       * so a single open fails with "unit ... is already open" and the plugin half-boots: its typert
+       * definitions then look withdrawn to every client. Retrying lets the old handle go first.
+       */
+      const openUnit = async (name) => {
+        let last;
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          try {
+            return await backend.kv.open({ name, version: 1, tables: [], hasGlobal: true, layout: 'single' });
+          } catch (error) {
+            last = error;
+            const message = error?.message ?? String(error);
+            if (message.includes('already open') !== true) throw error;
+            bootLog(`unit ${name} still open (attempt ${attempt + 1}), retrying`);
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+        }
+        throw last;
+      };
       bootLog('opening storage unit session_cards');
-      const unit = await backend.kv.open({
-        name: 'session_cards',
-        version: 1,
-        tables: [],
-        hasGlobal: true,
-        layout: 'single',
-      });
+      const unit = await openUnit('session_cards');
+      // Order and remembered members live apart from the board snapshot, so an older build — whose
+      // snapshot schema is strict — keeps working unchanged.
+      const uiUnit = await openUnit('session_cards_ui');
+      this._uiUnit = uiUnit;
+      const readUi = async () => {
+        try {
+          return uiStateSchema.parse((await uiUnit.loadAll()).global ?? {});
+        } catch {
+          return uiStateSchema.parse({});
+        }
+      };
+      this._readUi = readUi;
+      this._writeUi = async (patch) => {
+        const next = uiStateSchema.parse({ ...(await readUi()), ...patch });
+        await uiUnit.setGlobal(next);
+        return next;
+      };
       this._store = new CardStore({
         load: async () => (await unit.loadAll()).global,
         save: (value) => unit.setGlobal(value),
@@ -116,6 +149,7 @@ export default class SessionCardsService extends TypertRemoteService {
           this._closed = true;
           await this._store?.close();
           await unit.close();
+          await uiUnit.close();
         },
         'session-cards: durable lifecycle',
       );
@@ -287,6 +321,21 @@ export default class SessionCardsService extends TypertRemoteService {
       sessionId: created.sessionId,
     });
     return created.sessionId;
+  }
+
+  /** The plugin's own UI state: group order and each group's remembered member. */
+  async uiState(_request, signal) {
+    this._owner();
+    this._note('uiState');
+    signal?.throwIfAborted?.();
+    return this._readUi();
+  }
+
+  async setUiState(raw, signal) {
+    this._owner();
+    this._note('setUiState');
+    signal?.throwIfAborted?.();
+    return this._writeUi(uiStatePatchSchema.parse(raw ?? {}));
   }
 
   async execute(raw, signal) {

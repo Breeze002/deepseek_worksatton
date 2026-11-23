@@ -83,6 +83,19 @@ class Controller {
     }
   }
 
+  /** The plugin's own view state (group order, remembered members), kept Host side. */
+  async uiState() {
+    const result = await this.remote.uiState({}, this.life.signal);
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
+  async setUiState(patch) {
+    const result = await this.remote.setUiState(patch, this.life.signal);
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
   /** The Session hosting one group's chat (created on first use, Host side). */
   async chatSession(groupId) {
     const result = await this.remote.chatSession({ groupId }, this.disposal.signal);
@@ -190,10 +203,22 @@ function useFocus() {
   return React.useSyncExternalStore(focusStore.subscribe, focusStore.getSnapshot);
 }
 
-/** Members of the group in view, resolved from the mirrored snapshot. */
+/**
+ * Members of the group the reader is working in.
+ *
+ * The active group comes first: it is what the panel shows and what a group switch set, and it
+ * follows the visible Session. Falling back to the first group — as this once did — made `Alt+digit`
+ * jump to the first group's member and drag the panel back there with it.
+ */
 function groupMembersOf(state) {
   const groups = (state.data?.groups ?? []).filter((group) => !group.archived);
-  const group = groups.find((candidate) => candidate.id === state.groupId) ?? groups[0];
+  // The Session on screen decides: `Alt+digit` must address the group the reader is looking at, not
+  // fall back to the first one (which also dragged the panel back there).
+  const visible = groupOfSession(state, getCurrentShellSessionId())?.group;
+  const group = visible
+    ?? groups.find((candidate) => candidate.id === activeGroupId)
+    ?? groups.find((candidate) => candidate.id === state.groupId)
+    ?? groups[0];
   return group?.members ?? [];
 }
 // Mirror of the latest board snapshot: the keyboard must resolve members even when no surface is
@@ -363,8 +388,7 @@ let navActions = {
   enterFocus: () => {},
   exitFocus: () => {},
   openMember: () => {},
-  rememberMember: () => {},
-  moveGroup: () => {},
+  persistUi: () => {},
 };
 export const setNavActions = (actions) => {
   navActions = actions;
@@ -372,14 +396,62 @@ export const setNavActions = (actions) => {
 export const enterFocus = (options) => navActions.enterFocus(options);
 export const exitFocus = () => navActions.exitFocus();
 export const openMember = (member) => navActions.openMember(member);
-export const rememberMember = (groupId, memberId) => navActions.rememberMember(groupId, memberId);
-export const moveGroup = (groupId, delta) => navActions.moveGroup(groupId, delta);
+/**
+ * The plugin's own view state: the order the reader put the groups in, and the member each group was
+ * last switched to. Kept in memory and persisted through `navActions.persistUi` — the board snapshot
+ * itself is never extended, so an older build still reads it.
+ */
+let uiState = { groupOrder: [], lastMember: {} };
+const uiListeners = new Set();
+const uiStore = {
+  subscribe: (listener) => {
+    uiListeners.add(listener);
+    return () => uiListeners.delete(listener);
+  },
+  getSnapshot: () => uiState,
+};
+const publishUi = (next) => {
+  uiState = next;
+  for (const listener of uiListeners) listener();
+};
+export const useUiState = () => React.useSyncExternalStore(uiStore.subscribe, uiStore.getSnapshot);
+/** The member one group was last switched to, if any. */
+export const lastMemberOf = (groupId) => uiState.lastMember[groupId] ?? null;
+export const adoptUiState = (value) => {
+  if (value === null || value === undefined) return;
+  const groupOrder = Array.isArray(value.groupOrder) ? value.groupOrder : [];
+  const lastMember = value.lastMember ?? {};
+  const same = groupOrder.join() === uiState.groupOrder.join()
+    && JSON.stringify(lastMember) === JSON.stringify(uiState.lastMember);
+  if (same !== true) publishUi({ groupOrder, lastMember });
+};
+export const rememberMember = (groupId, memberId) => {
+  if ((uiState.lastMember[groupId] ?? null) === memberId) return;
+  const next = { ...uiState, lastMember: { ...uiState.lastMember, [groupId]: memberId } };
+  publishUi(next);
+  navActions.persistUi({ lastMember: next.lastMember });
+};
+export const moveGroup = (groupId, delta) => {
+  const current = orderedGroups(latestBoardState).map((group) => group.id);
+  const from = current.indexOf(groupId);
+  if (from < 0) return;
+  const to = Math.max(0, Math.min(current.length - 1, from + delta));
+  if (to === from) return;
+  current.splice(to, 0, current.splice(from, 1)[0]);
+  publishUi({ ...uiState, groupOrder: current });
+  navActions.persistUi({ groupOrder: current });
+};
 
-/** Groups in their stored order; groups without one keep their creation order. */
-export const orderedGroups = (boardState) =>
-  [...(boardState?.data?.groups ?? [])]
-    .filter((group) => group.archived !== true)
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.createdAt - b.createdAt);
+/** Groups in the reader's order; unknown groups follow, by creation time. */
+export const orderedGroups = (boardState) => {
+  const groups = [...(boardState?.data?.groups ?? [])].filter((group) => group.archived !== true);
+  const rank = new Map(uiState.groupOrder.map((id, index) => [id, index]));
+  return groups.sort((a, b) => {
+    const left = rank.has(a.id) ? rank.get(a.id) : Number.MAX_SAFE_INTEGER;
+    const right = rank.has(b.id) ? rank.get(b.id) : Number.MAX_SAFE_INTEGER;
+    return left - right || a.createdAt - b.createdAt;
+  });
+};
 
 // Which group the member panel shows. It follows the visible Session, and a group switch sets it
 // explicitly so the panel can change before the Session navigation settles.
@@ -398,6 +470,23 @@ export const setActiveGroup = (groupId) => {
   if (next === activeGroupId) return;
   activeGroupId = next;
   for (const listener of activeGroupListeners) listener();
+};
+
+/**
+ * A group switch is set before the shell has moved to that group's Session, so for a short while the
+ * "active group follows the Session" rule must not undo it — that is what made a member shortcut
+ * jump to the first group and drag the panel back with it.
+ */
+let switchGuard = { groupId: null, until: 0 };
+export const noteGroupSwitch = (groupId) => {
+  switchGuard = { groupId: groupId ?? null, until: Date.now() + 2500 };
+};
+/** Called when the visible Session changes: adopt its group unless a switch is still settling. */
+export const adoptGroupOfSession = (groupId) => {
+  if (groupId === null || groupId === undefined) return;
+  if (switchGuard.groupId !== null && Date.now() < switchGuard.until && switchGuard.groupId !== groupId) return;
+  switchGuard = { groupId: null, until: 0 };
+  setActiveGroup(groupId);
 };
 export const selectMember = (member) => navActions.openMember(member);
 

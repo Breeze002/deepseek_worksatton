@@ -33,7 +33,7 @@ const zh = {
   unnamed: '未命名',
   moveGroupUp: '上移这个群',
   moveGroupDown: '下移这个群',
-  groupSwitchHint: '空格+数字 切换群组',
+  groupSwitchHint: 'Ctrl+Shift+数字 切换群组',
   title: '会话卡片',
   create: '新建群组',
   empty: '还没有群组',
@@ -94,7 +94,7 @@ const en = {
   unnamed: 'Untitled',
   moveGroupUp: 'Move this group up',
   moveGroupDown: 'Move this group down',
-  groupSwitchHint: 'Space+digit switches group',
+  groupSwitchHint: 'Ctrl+Shift+digit switches group',
   title: 'Session cards',
   create: 'New group',
   empty: 'No groups yet',
@@ -152,7 +152,7 @@ import { PanelBoundary, createPublisher, setReportDiagnostic } from './diagnosti
 // Re-exported so a test binds to the marker slot instead of hard-coding a second copy of the name;
 // the previous copy (`contextMenu.content`) is exactly what made this invisible.
 export { MARKER_SLOT } from './diagnostics.js';
-import { Controller, currentSessionIdOf, describeFollow, followProbe, newCommandId, setController, getController, groupOfSession, latestBoardState, memberOfSession, setGroupChat, setSessionIndex, setActiveGroup, setFocus, setFocusCtx, setNavActions, pushSessionHistory, getCurrentShellSessionId, setCurrentShellSessionId, subscribeCurrentSession, runtimeListeners } from './state.js';
+import { Controller, currentSessionIdOf, describeFollow, followProbe, newCommandId, setController, getController, groupOfSession, latestBoardState, memberOfSession, setGroupChat, setSessionIndex, adoptGroupOfSession, adoptUiState, setActiveGroup, setFocus, setFocusCtx, setNavActions, pushSessionHistory, getCurrentShellSessionId, setCurrentShellSessionId, subscribeCurrentSession, runtimeListeners } from './state.js';
 import { createKeyboardLayer } from './keyboard.js';
 import { createReadingMemory } from './reading.js';
 import { createGroupChat } from './chat.js';
@@ -247,11 +247,20 @@ export async function apply(ctx) {
   });
   ctx.effect(() => () => focusKeeper.stop(), 'session-cards: focus stays left');
 
+  // Read the view state once, then keep it in memory: switching must not wait on a round trip.
+  const readUiState = () => {
+    const controller = getController();
+    if (controller === null || controller === undefined) return;
+    void controller.uiState().then(adoptUiState).catch(() => {});
+  };
+  readUiState();
+  runtimeListeners.add(readUiState);
+
   // The panel follows the visible Session; a group switch sets the same value earlier.
   ctx.effect(
     () => subscribeCurrentSession(() => {
       const owner = groupOfSession(latestBoardState, getCurrentShellSessionId());
-      if (owner !== null) setActiveGroup(owner.group.id);
+      if (owner !== null) adoptGroupOfSession(owner.group.id);
     }),
     'session-cards: active group follows the Session',
   );
@@ -349,17 +358,16 @@ export async function apply(ctx) {
   };
   // The focus-mode actions are the only part of the wiring the keyboard layer and the views call
   // back into; they are installed here so nothing else has to know about ctx.
-  const executeCommand = (command) => {
-    const controller = getController();
-    if (controller === null || controller === undefined) return;
-    void controller.execute({ commandId: newCommandId(), ...command }).catch(() => {});
-  };
   setNavActions({
     enterFocus: enterFocusImpl,
     exitFocus: exitFocusImpl,
     openMember,
-    rememberMember: (groupId, memberId) => executeCommand({ action: 'rememberMember', groupId, memberId }),
-    moveGroup: (groupId, delta) => executeCommand({ action: 'moveGroup', groupId, delta }),
+    // Writes go through the plugin's own unit, never through the board snapshot.
+    persistUi: (patch) => {
+      const controller = getController();
+      if (controller === null || controller === undefined) return;
+      void controller.setUiState(patch).then(adoptUiState).catch(() => {});
+    },
   });
 
   // The window keyboard layer: member switching, question cards, approvals and scrolling.

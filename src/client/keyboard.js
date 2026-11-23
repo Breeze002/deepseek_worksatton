@@ -1,5 +1,5 @@
 /** The window keyboard layer. */
-import { focusState, getCurrentShellSessionId, getGroupChat, groupMembersOf, latestBoardState, memberOfSession, noteReadingGesture, orderedGroups, rememberMember, setActiveGroup, setFocus, exitFocus, enterFocus, openMember, popSessionHistory, stepMember } from './state.js';
+import { focusState, getCurrentShellSessionId, getGroupChat, groupMembersOf, latestBoardState, memberOfSession, lastMemberOf, noteGroupSwitch, noteReadingGesture, orderedGroups, rememberMember, setActiveGroup, setFocus, exitFocus, enterFocus, openMember, popSessionHistory, stepMember } from './state.js';
 import { revealInScroller } from './view/parts.js';
 
 /**
@@ -49,17 +49,19 @@ export function createKeyboardLayer(ctx, deps) {
     };
 
     /**
-     * Switching the group the panel shows: `Space` then a digit, within a short window.
+     * Switching the group the panel shows: `Shift` plus a digit.
      *
-     * A space cannot be a modifier, so this is a sequence — and it never runs while a text field has
-     * the focus, so typing "1 " stays exactly what it was.
+     * A chord, not a sequence — no window, no timer, nothing to expire. It never runs while a text
+     * field has the focus, so `%` and `(` still type normally.
      */
-    let groupSeqUntil = 0;
-    const GROUP_SEQ_MS = 800;
-    const typing = (target) =>
-      target instanceof HTMLTextAreaElement
-      || target instanceof HTMLInputElement
-      || target?.isContentEditable === true;
+    /** Anything that takes text: fields, editors, and the shell's own textbox/combobox roles. */
+    const typingField = (target) => {
+      if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) return true;
+      if (target?.isContentEditable === true) return true;
+      if (target instanceof HTMLSelectElement) return true;
+      const role = target?.getAttribute?.('role');
+      return role === 'textbox' || role === 'searchbox' || role === 'combobox';
+    };
 
     const switchGroup = (index) => {
       const groups = orderedGroups(latestBoardState);
@@ -68,8 +70,10 @@ export function createKeyboardLayer(ctx, deps) {
         publish(`sessionCardsGroup=${index}:missing:of=${groups.length}`.slice(0, 160));
         return;
       }
-      const target = group.members.find((member) => member.id === group.lastMemberId) ?? group.members[0];
+      const remembered = lastMemberOf(group.id);
+      const target = group.members.find((member) => member.id === remembered) ?? group.members[0];
       publish(`sessionCardsGroup=${index}:${group.name}:member=${target?.alias ?? 'none'}`.slice(0, 200));
+      noteGroupSwitch(group.id);
       setActiveGroup(group.id);
       if (target === undefined) return;
       rememberMember(group.id, target.id);
@@ -82,15 +86,14 @@ export function createKeyboardLayer(ctx, deps) {
     };
 
     const onGroupKey = (event) => {
-      if (event.altKey || event.ctrlKey || event.metaKey) return;
-      if (typing(event.target) === true) return;
-      if (event.code === 'Space') {
-        groupSeqUntil = performance.now() + GROUP_SEQ_MS;
-        return; // the key keeps its normal meaning; only the digit that follows is ours
-      }
+      // Ctrl+Shift+digit: free of this plugin's own Alt+digit, of bare digits and of the browser's
+      // own Ctrl+digit tab shortcuts.
+      if (event.ctrlKey !== true || event.shiftKey !== true || event.altKey || event.metaKey) return;
       const digit = /^Digit([1-9])$/.exec(event.code);
-      if (digit === null || performance.now() > groupSeqUntil) return;
-      groupSeqUntil = 0;
+      if (digit === null) return;
+      // No text-field guard here on purpose: `Ctrl+Shift+digit` inserts no character, so it cannot
+      // disturb typing — while the caret is in the composer almost all the time, and a guard would
+      // then skip the shortcut in exactly the situation it is meant for.
       event.preventDefault();
       event.stopPropagation();
       switchGroup(Number(digit[1]));

@@ -93,13 +93,28 @@ export const createFocusKeeper = (deps = {}) => {
     // Two frames: the shell renders the entered Session (and its composer) after the switch.
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
-        const outcome = focusConversation();
-        deps.publish?.(`sessionCardsFocus=${outcome}`.slice(0, 160));
+        attempt(8); // ~1s of retries, then report whatever happened
       });
     });
   };
+  /**
+   * Try for a short while: the shell may render the conversation's composer a few frames after the
+   * Session itself, and a single attempt then leaves the caret outside it.
+   */
+  const attempt = (tries) => {
+    const outcome = focusConversation();
+    if (outcome === 'composer' || outcome === 'already-left') {
+      deps.publish?.(`sessionCardsFocus=${outcome}`.slice(0, 160));
+      return;
+    }
+    if (tries <= 0) {
+      deps.publish?.(`sessionCardsFocus=${outcome}`.slice(0, 160));
+      return;
+    }
+    window.setTimeout(() => attempt(tries - 1), 120);
+  };
   const unsubscribe = deps.subscribe?.(apply);
-  return { apply, stop: () => unsubscribe?.() };
+  return { apply, attempt, stop: () => unsubscribe?.() };
 };
 
 export { reportDiagnostic };

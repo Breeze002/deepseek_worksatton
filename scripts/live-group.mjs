@@ -44,13 +44,28 @@ try {
   await press('Digit1', '1', { altKey: true }); // enter the first member so the panel exists
   await page.waitForTimeout(2500);
   console.log('BEFORE', JSON.stringify(await snap()));
-  await press('Space', ' ');
-  await page.waitForTimeout(120);
-  await press(`Digit${digit}`, digit);
+  // Shift+digit: a chord, so nothing has to be timed.
+  // Press it the way the reader does: from inside the conversation's composer, which is focused.
+  await page.evaluate(({ d }) => {
+    const composer = [...document.querySelectorAll('[contenteditable="true"], textarea')]
+      .find((node) => node.getBoundingClientRect().width > 0);
+    composer?.focus?.();
+    const target = composer ?? document.body;
+    target.dispatchEvent(new KeyboardEvent('keydown', {
+      code: `Digit${d}`, key: d, ctrlKey: true, shiftKey: true, bubbles: true,
+    }));
+  }, { d: digit });
   await page.waitForTimeout(2500);
   const after = await snap();
   console.log('AFTER ', JSON.stringify(after));
-  console.log('VERDICT', after.groupName !== null && after.focusFlavor === 'panel' ? `panel now shows "${after.groupName}" ✓` : 'the panel is not showing a group ✗');
+  // The reported bug: in the other group, a member shortcut used to fall back to the first group.
+  await press('Digit2', '2', { altKey: true });
+  await page.waitForTimeout(2500);
+  const afterMemberKey = await snap();
+  console.log('AFTER-Alt2', JSON.stringify(afterMemberKey));
+  console.log('VERDICT', afterMemberKey.groupName === after.groupName
+    ? `still on "${afterMemberKey.groupName}" after Alt+2 ✓`
+    : `Alt+2 moved the panel to "${afterMemberKey.groupName}" ✗ (was "${after.groupName}")`);
 } finally {
   await browser.close();
 }
