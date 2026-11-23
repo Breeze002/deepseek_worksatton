@@ -378,12 +378,12 @@ export function createKeyboardLayer(ctx, deps) {
       if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.key !== 'Enter' && event.key !== 'Escape') return;
       const active = document.activeElement;
-      // A focused field only owns Enter while the user is actually writing something; an empty
-      // composer is exactly the state in which Enter should approve.
+      // A focused field owns Enter. It used to own it only while holding text, which meant an empty
+      // composer — where the caret rests by default — approved a request instead of sending a reply.
       const owner = active instanceof HTMLElement
         ? active.closest('input, textarea, [contenteditable="true"], [contenteditable=""]')
         : null;
-      if (owner !== null && !fieldIsEmpty(owner)) return;
+      if (owner !== null) return;
       // The newest visible card: an answered one may still sit in the transcript above it.
       const card = [...document.querySelectorAll('[data-approval-key]')].filter(shownCard).pop();
       if (card === undefined || card.getAttribute('aria-busy') === 'true') return;
@@ -631,8 +631,11 @@ export function createKeyboardLayer(ctx, deps) {
       const inCardField = field !== null && card.contains(field);
       const isArrow = event.code === 'ArrowUp' || event.code === 'ArrowDown'
         || event.code === 'ArrowLeft' || event.code === 'ArrowRight';
-      if (!inCardField && field !== null && !fieldIsEmpty(field)) {
-        // The user is writing somewhere else. Typing keys (and Space) stay with that field, but the
+      if (!inCardField && field !== null) {
+        // A focused field owns every key that could be text — digits, Space and Enter included. The
+        // rule used to ask whether the field already held text, but the caret rests in an *empty*
+        // composer by default, so a digit answered a question instead of reaching the box the user
+        // had just clicked into: it looked like the answer box could not be typed in at all. The
         // arrows still drive the card: handing them to the scroller moved the card out from under
         // the user, which read as the cursor jumping to another box.
         if (!isArrow) return;
@@ -688,6 +691,11 @@ export function createKeyboardLayer(ctx, deps) {
         event.preventDefault();
         event.stopPropagation();
         markCursor(target);
+        // A highlight is not an input. Moving onto a free-text row has to hand it the caret, or the
+        // reader sees the box marked and still cannot type into it — which is exactly what they
+        // reported. Option rows keep their behaviour: only a field takes the focus.
+        const markedField = editableField(target);
+        if (markedField !== null && markedField !== document.activeElement) markedField.focus();
         // Arrows only move the cursor: selecting here made the shell treat the question as answered
         // and advance to the next one, which read as "↓ jumped to the second question". Choosing is
         // an explicit act — a digit, or Space on the focused option (native button activation).
@@ -702,9 +710,9 @@ export function createKeyboardLayer(ctx, deps) {
         trace(`${event.code === 'ArrowDown' ? 'D' : event.code === 'ArrowUp' ? 'U' : event.code === 'ArrowLeft' ? 'L' : event.code === 'ArrowRight' ? 'R' : event.code}=q${question + 1}/${blockCount}i${item + 1}/${usable[question]}${clicked ? '+c' : ''}:sel${selectedBefore}->${selectedAfter}`);
       };
       if (event.code === 'Space') {
-        // Our own activation: the cursor item is chosen without focusing it first.
-        // Same rule as the other keys: a field only owns the space bar while it holds text.
-        if (field !== null && !card.contains(field) && !fieldIsEmpty(field)) return;
+        // Our own activation: the cursor item is chosen without focusing it first. A field outside
+        // the card already returned above; this keeps the space bar with any field regardless.
+        if (field !== null && !card.contains(field)) return;
         const target = blocks[block].targets[index >= 0 ? index : 0];
         if (target === undefined) return;
         settle(target, block, index >= 0 ? index : 0, 'select');

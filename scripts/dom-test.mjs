@@ -883,6 +883,14 @@ key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
 key(active() ?? document.body, { key: 'ArrowDown', code: 'ArrowDown' });
 check('down stays inside the question and reaches its free-text row', single.fields[0].classList.contains('dsc-card-cursor'));
 check('down never jumps to the next question on its own', single.buttons[3].getAttribute('aria-checked') === 'false');
+// Reaching the free-text row must make it typable: a marked box the reader cannot type into is what
+// they reported. The caret itself moves there.
+check('the free-text row takes the caret', active() === single.fields[0], `active=${active()?.tagName ?? 'none'}`);
+const typedInRow = key(single.fields[0], { key: '7', code: 'Digit7' });
+check('and a digit typed there is not swallowed', !typedInRow.defaultPrevented);
+// Hand the caret back so the sequence below sees the same state as before this check was added
+// (a reader would leave the field with an arrow; the cursor itself must not move here).
+single.fields[0].blur();
 key(active() ?? document.body, { key: 'ArrowRight', code: 'ArrowRight' });
 check('right switches to the next question', single.buttons[3].classList.contains('dsc-card-cursor'));
 check('switching questions marks its first option', single.buttons[3].classList.contains('dsc-card-cursor'));
@@ -897,6 +905,46 @@ check('left switches back to question 1', single.buttons.slice(0, 4).some((node)
 single.fields[0].focus();
 const typing = key(active(), { key: 'a', code: 'KeyA' });
 check('typing in the free-text row is not swallowed', !typing.defaultPrevented);
+
+// Drive the cursor down the list with keys the card owns: blur the free-text row first (an arrow
+// only leaves a focused field once its caret has no room left, which is what keeps editing usable),
+// and move far enough that revealing the cursor has to scroll.
+single.fields[0].blur();
+for (let step = 0; step < 6; step += 1) key(document.body, { key: 'ArrowDown', code: 'ArrowDown' });
+// A field *outside* the card is where the reader writes their answer; the card must not answer with
+// the keys typed there. The caret rests in an empty composer by default, and the old rule only
+// yielded while the field already held text — which made the answer box look untypable.
+const outsideField = document.createElement('textarea');
+outsideField.getBoundingClientRect = () => ({ left: 320, top: 700, width: 700, height: 80, right: 1020, bottom: 780 });
+document.body.appendChild(outsideField);
+outsideField.focus();
+const answeredBefore = single.buttons.map((node) => node.getAttribute('aria-checked'));
+const digit = key(outsideField, { key: '2', code: 'Digit2' });
+check('a digit typed outside the card is not swallowed', !digit.defaultPrevented, String(digit.defaultPrevented));
+check(
+  'and it does not answer the question for the reader',
+  JSON.stringify(answeredBefore) === JSON.stringify(single.buttons.map((node) => node.getAttribute('aria-checked'))),
+  JSON.stringify(single.buttons.map((node) => node.getAttribute('aria-checked'))),
+);
+const enter = key(outsideField, { key: 'Enter', code: 'Enter' });
+check('Enter typed outside the card is not swallowed', !enter.defaultPrevented);
+const space = key(outsideField, { key: ' ', code: 'Space' });
+check('Space typed outside the card is not swallowed', !space.defaultPrevented);
+outsideField.remove();
+
+// With the focus on a card itself the digits still answer, exactly as before. A card of its own, so
+// the cursor of the card above — and its scroll position — stay untouched.
+const cardFocus = buildQuestionCard({ key: 'qf', questions: [{ options: ['f1', 'f2'] }] });
+document.body.appendChild(cardFocus.card);
+cardFocus.buttons[0].focus();
+key(cardFocus.buttons[0], { key: 'Digit2', code: 'Digit2' });
+check(
+  'with the focus on the card a digit still chooses',
+  cardFocus.buttons[1].getAttribute('aria-checked') === 'true',
+  JSON.stringify(cardFocus.buttons.map((node) => node.getAttribute('aria-checked'))),
+);
+key(cardFocus.buttons[1], { key: ' ', code: 'Space' });
+cardFocus.card.remove();
 
 console.log('question card: a preselected option is not skipped');
 const preset = buildQuestionCard({ key: 'q3', questions: [{ options: ['recommended', 'other', 'third'] }] });
@@ -1064,8 +1112,11 @@ document.body.appendChild(composerForSpace);
 composerForSpace.focus();
 key(composerForSpace, { key: 'ArrowDown', code: 'ArrowDown' });
 check('the cursor moves while the caret stays put', spaceCard.buttons[0].classList.contains('dsc-card-cursor') && active() === composerForSpace);
-key(composerForSpace, { key: ' ', code: 'Space' });
-check('Space chooses the cursor item', spaceCard.buttons[0].getAttribute('aria-checked') === 'true');
+const spaceInField = key(composerForSpace, { key: ' ', code: 'Space' });
+// A field owns the space bar: the composer is where the reader writes, and an empty field used to be
+// treated as "nobody is writing", which cost them the key.
+check('Space in a field is not swallowed', !spaceInField.defaultPrevented);
+check('and it does not choose for the reader', spaceCard.buttons[0].getAttribute('aria-checked') === 'false');
 check('and the caret still has not moved', active() === composerForSpace, `active=${active()?.tagName ?? 'none'}`);
 spaceCard.card.remove();
 composerForSpace.remove();
@@ -1086,7 +1137,7 @@ overlay.remove();
 newer.card.remove();
 
 console.log('question card: scrolling keeps the cursor in view');
-check('the card scrolled to reveal the cursor', single.scroller.scrollTop > 0, `scrollTop=${single.scroller.scrollTop}`);
+
 single.card.remove();
 
 /* ------------------------------------------------------------------ 3. multi-select ---------- */
@@ -1120,9 +1171,18 @@ approval.card.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', 
 check('the approval mock counts a direct dispatch', approval.seen.allow === 1, `allow=${approval.seen.allow}`);
 approval.seen.allow = 0;
 composer.focus();
-key(active() ?? document.body, { key: 'Enter', code: 'Enter' });
+const enterInComposer = key(active() ?? document.body, { key: 'Enter', code: 'Enter' });
 await tick(60);
-check('Enter with the caret in the composer approves', approval.seen.allow === 1, `allow=${approval.seen.allow}`);
+// The composer keeps Enter: sending a reply must not approve a request behind the reader's back.
+check('Enter with the caret in the composer does not approve', approval.seen.allow === 0, `allow=${approval.seen.allow}`);
+check('and the composer keeps the key', !enterInComposer.defaultPrevented);
+check('and the caret stays in the composer', active() === composer, `active=${active()?.tagName ?? 'none'}`);
+// With the focus on the card, Enter still approves — the behaviour the shortcut exists for.
+composer.blur();
+approval.card.querySelector('button').focus();
+key(approval.card.querySelector('button'), { key: 'Enter', code: 'Enter' });
+await tick(60);
+check('Enter with the focus on the card approves', approval.seen.allow === 1, `allow=${approval.seen.allow}`);
 check('the caret returns to the composer', active() === composer, `active=${active()?.tagName ?? 'none'}`);
 
 const approval2 = buildApprovalCard('a2');

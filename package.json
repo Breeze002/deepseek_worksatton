@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-cards",
-  "version": "0.28.5",
+  "version": "0.28.7",
   "private": true,
   "type": "module",
   "description": "Session card board: one card per member session, dispatch tasks and watch status",
