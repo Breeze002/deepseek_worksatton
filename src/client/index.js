@@ -200,10 +200,29 @@ export async function apply(ctx) {
 
   // The shell's session nodes are the source for member status and for "which Session is shown".
   // Seeded here rather than inside an effect so the first render of any surface already has it.
-  const sessionList = ctx.get('sessions')?.list;
+  // `let`, and re-read below: a one-shot `ctx.get` at apply time is often too early — the service may
+  // not exist yet, and the list then stays undefined forever, which silently pinned every member to
+  // "idle" no matter what they were doing.
+  let sessionList = ctx.get('sessions')?.list;
   let lastSnapshot;
+  // A read-only handle for live probes: the member status can only be judged by comparing the
+  // Session data against what the panel renders, and a probe has no other way in.
+  try {
+    window.__sessionCards = {
+      groups: () => latestBoardState?.data?.groups ?? [],
+      sessionIndex: () => sessionList?.getSnapshot()?.byId ?? {},
+      currentSessionId: () => getCurrentShellSessionId(),
+      openSession: (sessionId) => ctx.get('uiWorkspace')?.openSession(sessionId),
+      panels: () => [...document.querySelectorAll('.dsc-row')].map((row) => row.textContent),
+    };
+  } catch {
+    /* a host without a window is fine */
+  }
+
   const syncSessions = () => {
-    const snapshot = sessionList?.getSnapshot();
+    sessionList ??= ctx.get('sessions')?.list;
+    if (sessionList === undefined || sessionList === null) return;
+    const snapshot = sessionList.getSnapshot();
     if (snapshot === lastSnapshot) return; // the store hands out a new object per change
     lastSnapshot = snapshot;
     const byId = snapshot?.byId ?? {};
@@ -215,6 +234,17 @@ export async function apply(ctx) {
   } catch (failure) {
     publish(`sessionCardsSessionIndexError=${failure instanceof Error ? failure.message : String(failure)}`);
   }
+  // Pick the service up whenever it appears, and sync once as soon as it does.
+  ctx.inject(['sessions'], (scoped) => {
+    sessionList = scoped.get('sessions')?.list ?? sessionList;
+    try {
+      syncSessions();
+    } catch (failure) {
+      publish(`sessionCardsSessionIndexError=${failure instanceof Error ? failure.message : String(failure)}`);
+    }
+    return () => {};
+  });
+
   ctx.effect(() => {
     // The store's notification API is not part of any plugin contract, so a light poll keeps the
     // member status honest when subscribing is not available; a poll that finds the same snapshot
