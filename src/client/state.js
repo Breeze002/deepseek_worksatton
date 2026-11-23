@@ -359,13 +359,46 @@ export const pushSessionHistory = (sessionId) => {
   if (navHistory.length > 24) navHistory.shift();
 };
 export const popSessionHistory = () => navHistory.pop();
-let navActions = { enterFocus: () => {}, exitFocus: () => {}, openMember: () => {} };
+let navActions = {
+  enterFocus: () => {},
+  exitFocus: () => {},
+  openMember: () => {},
+  rememberMember: () => {},
+  moveGroup: () => {},
+};
 export const setNavActions = (actions) => {
   navActions = actions;
 };
 export const enterFocus = (options) => navActions.enterFocus(options);
 export const exitFocus = () => navActions.exitFocus();
 export const openMember = (member) => navActions.openMember(member);
+export const rememberMember = (groupId, memberId) => navActions.rememberMember(groupId, memberId);
+export const moveGroup = (groupId, delta) => navActions.moveGroup(groupId, delta);
+
+/** Groups in their stored order; groups without one keep their creation order. */
+export const orderedGroups = (boardState) =>
+  [...(boardState?.data?.groups ?? [])]
+    .filter((group) => group.archived !== true)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.createdAt - b.createdAt);
+
+// Which group the member panel shows. It follows the visible Session, and a group switch sets it
+// explicitly so the panel can change before the Session navigation settles.
+let activeGroupId = null;
+const activeGroupListeners = new Set();
+const activeGroupStore = {
+  subscribe: (listener) => {
+    activeGroupListeners.add(listener);
+    return () => activeGroupListeners.delete(listener);
+  },
+  getSnapshot: () => activeGroupId,
+};
+export const useActiveGroup = () => React.useSyncExternalStore(activeGroupStore.subscribe, activeGroupStore.getSnapshot);
+export const setActiveGroup = (groupId) => {
+  const next = groupId ?? null;
+  if (next === activeGroupId) return;
+  activeGroupId = next;
+  for (const listener of activeGroupListeners) listener();
+};
 export const selectMember = (member) => navActions.openMember(member);
 
 export function stepMember(delta) {

@@ -17,10 +17,14 @@ import {
   groupOfSession,
   memberStatus,
   newCommandId,
+  moveGroup,
   openMember,
+  orderedGroups,
+  rememberMember,
   getGroupChat,
   setFocus,
   stepMember,
+  useActiveGroup,
   useController,
   useControllerState,
   useSessionIndex,
@@ -45,7 +49,11 @@ function MemberPanel() {
 
   const currentSession = getCurrentShellSessionId();
   const owner = groupOfSession(state, currentSession);
-  const group = owner === null ? null : owner.group;
+  const activeGroupId = useActiveGroup();
+  // The cover stays out of an unrelated Session: the group switch also moves that Session, so the
+  // two never disagree for longer than the navigation takes.
+  const chosen = owner === null ? undefined : orderedGroups(state).find((candidate) => candidate.id === activeGroupId);
+  const group = chosen ?? (owner === null ? null : owner.group);
   const visible = group !== null && dismissed !== true;
 
   React.useEffect(() => {
@@ -127,6 +135,26 @@ function MemberPanel() {
       h('span', { className: 'dsc-mp-title', title: group.name }, group.name),
       h(
         'button',
+        {
+          type: 'button',
+          className: 'dsc-mp-order',
+          title: t('moveGroupUp'),
+          onClick: () => moveGroup(group.id, -1),
+        },
+        '▲',
+      ),
+      h(
+        'button',
+        {
+          type: 'button',
+          className: 'dsc-mp-order',
+          title: t('moveGroupDown'),
+          onClick: () => moveGroup(group.id, 1),
+        },
+        '▼',
+      ),
+      h(
+        'button',
         { type: 'button', className: 'dsc-mp-switch', onClick: () => setDismissed(true), title: t('showSessions') },
         t('showSessions'),
       ),
@@ -152,8 +180,14 @@ function MemberPanel() {
           active: member.id === focus.memberId || member.sessionId === currentSession,
           hint: index < 9 ? `Alt+${index + 1}` : undefined,
           status: { ...memberStatus(member, sessions), unread: unread[member.id] === true },
-          onSelect: (target) => openMember(target),
-          onOpen: (target) => openMember(target),
+          onSelect: (target) => {
+            rememberMember(group.id, target.id);
+            openMember(target);
+          },
+          onOpen: (target) => {
+            rememberMember(group.id, target.id);
+            openMember(target);
+          },
           onMove: (target, delta) => moveMember(target, delta),
           canUp: index > 0,
           canDown: index < group.members.length - 1,

@@ -99,6 +99,9 @@ export const CSS = [
   '.dsc-member-panel .dsc-row:hover .dsc-row-actions,.dsc-member-panel .dsc-row:focus-within .dsc-row-actions{display:inline-flex}',
   '.dsc-member-panel .dsc-row-main{padding-right:6px}',
   '.dsc-member-panel .dsc-row-alias{max-width:none}',
+  '.dsc-mp-order{flex:none;border:0;background:transparent;color:var(--dsw-alias-label-caption,GrayText);font-size:9px;'
+    + 'line-height:1;padding:3px 4px;border-radius:4px;cursor:pointer}',
+  '.dsc-mp-order:hover{background:var(--dsw-alias-bg-hover,rgba(127,127,127,.14));color:var(--dsw-alias-label-primary,CanvasText)}',
   '.dsc-mp-list{flex:1;min-height:0;overflow-y:auto;padding:4px 4px 8px}',
   '.dsc-mp-foot{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 10px;'
     + 'border-top:1px solid var(--dsw-alias-border-secondary,rgba(127,127,127,.18))}',

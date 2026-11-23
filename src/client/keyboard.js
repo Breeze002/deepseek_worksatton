@@ -1,5 +1,5 @@
 /** The window keyboard layer. */
-import { focusState, getCurrentShellSessionId, getGroupChat, groupMembersOf, latestBoardState, memberOfSession, noteReadingGesture, setFocus, exitFocus, enterFocus, openMember, popSessionHistory, stepMember } from './state.js';
+import { focusState, getCurrentShellSessionId, getGroupChat, groupMembersOf, latestBoardState, memberOfSession, noteReadingGesture, orderedGroups, rememberMember, setActiveGroup, setFocus, exitFocus, enterFocus, openMember, popSessionHistory, stepMember } from './state.js';
 import { revealInScroller } from './view/parts.js';
 
 /**
@@ -48,6 +48,54 @@ export function createKeyboardLayer(ctx, deps) {
       return groups[0] ?? null;
     };
 
+    /**
+     * Switching the group the panel shows: `Space` then a digit, within a short window.
+     *
+     * A space cannot be a modifier, so this is a sequence — and it never runs while a text field has
+     * the focus, so typing "1 " stays exactly what it was.
+     */
+    let groupSeqUntil = 0;
+    const GROUP_SEQ_MS = 800;
+    const typing = (target) =>
+      target instanceof HTMLTextAreaElement
+      || target instanceof HTMLInputElement
+      || target?.isContentEditable === true;
+
+    const switchGroup = (index) => {
+      const groups = orderedGroups(latestBoardState);
+      const group = groups[index - 1];
+      if (group === undefined) {
+        publish(`sessionCardsGroup=${index}:missing:of=${groups.length}`.slice(0, 160));
+        return;
+      }
+      const target = group.members.find((member) => member.id === group.lastMemberId) ?? group.members[0];
+      publish(`sessionCardsGroup=${index}:${group.name}:member=${target?.alias ?? 'none'}`.slice(0, 200));
+      setActiveGroup(group.id);
+      if (target === undefined) return;
+      rememberMember(group.id, target.id);
+      if (!focusState.on) {
+        enterFocus({ clearPanel: false });
+        window.setTimeout(() => openMember(target), 0);
+        return;
+      }
+      openMember(target);
+    };
+
+    const onGroupKey = (event) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      if (typing(event.target) === true) return;
+      if (event.code === 'Space') {
+        groupSeqUntil = performance.now() + GROUP_SEQ_MS;
+        return; // the key keeps its normal meaning; only the digit that follows is ours
+      }
+      const digit = /^Digit([1-9])$/.exec(event.code);
+      if (digit === null || performance.now() > groupSeqUntil) return;
+      groupSeqUntil = 0;
+      event.preventDefault();
+      event.stopPropagation();
+      switchGroup(Number(digit[1]));
+    };
+
     const onMemberKey = (event) => {
       const combo = memberCombo(event);
       if (combo === null) return;
@@ -82,8 +130,21 @@ export function createKeyboardLayer(ctx, deps) {
         return;
       }
       const member = members[index - 1];
-      if (member === undefined) return;
-      publish(`sessionCardsKey=${combo}:members=${members.length}:focus=${String(focusState.on)}:to=${member.alias}`);
+      if (member === undefined) {
+        // Also recorded: a silent return here used to look identical to "the key never arrived".
+        publish(`sessionCardsKey=${combo}:missing:members=${members.length}`.slice(0, 180));
+        return;
+      }
+      const already = getCurrentShellSessionId() === member.sessionId;
+      publish(
+        `sessionCardsKey=${combo}:members=${members.length}:focus=${String(focusState.on)}:to=${member.alias}:already=${String(already)}`.slice(0, 180),
+      );
+      // Already there: only make sure the group view is on. Repeating the navigation made the shell
+      // re-enter the Session on every extra press, which is what the repeated presses felt like.
+      if (already === true) {
+        if (!focusState.on) enterFocus({ clearPanel: false });
+        return;
+      }
       if (focusState.on) {
         openMember(member);
         return;
@@ -761,6 +822,7 @@ export function createKeyboardLayer(ctx, deps) {
 
     ctx.effect(() => {
       const target = window;
+      target.addEventListener('keydown', onGroupKey, true);
       target.addEventListener('keydown', onMemberKey, true);
       target.addEventListener('keydown', onQuestionKey, true);
       target.addEventListener('keydown', onScrollKey, true);
@@ -771,6 +833,7 @@ export function createKeyboardLayer(ctx, deps) {
       target.addEventListener('pointermove', onPointerMove, { passive: true });
       return () => {
         stopScrollLoop();
+        target.removeEventListener('keydown', onGroupKey, true);
         target.removeEventListener('keydown', onMemberKey, true);
         target.removeEventListener('keydown', onQuestionKey, true);
         target.removeEventListener('keydown', onScrollKey, true);

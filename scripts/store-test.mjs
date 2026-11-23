@@ -94,6 +94,24 @@ check('the group remembers its chat session', store.snapshot().groups[0].chatSes
 check('and it is persisted', saved?.groups?.[0]?.chatSessionId === 'session-chat');
 check('a fresh group starts without one', store.snapshot().groups.every((entry) => entry.chatSessionId !== undefined));
 
+// Group order and the remembered member: the shortcut switches groups in this order and returns
+// each one to the member it was last on.
+const extra = await store.execute({
+  commandId: newId(),
+  action: 'createGroup',
+  name: '第二个群',
+  goal: '',
+  members: [made(9)],
+});
+void extra;
+const groupsOf = () => [...store.snapshot().groups].sort((a, b) => a.order - b.order || a.createdAt - b.createdAt);
+check('a new group lands at the end of the order', groupsOf().at(-1)?.name === '第二个群', JSON.stringify(groupsOf().map((g) => g.name)));
+await store.execute({ commandId: newId(), action: 'moveGroup', groupId: groupsOf().at(-1).id, delta: -1 });
+check('moveGroup swaps with the neighbour', groupsOf().at(-1)?.name === group.name, JSON.stringify(groupsOf().map((g) => g.name)));
+await store.execute({ commandId: newId(), action: 'rememberMember', groupId: group.id, memberId: group.members[0].id });
+check('the group remembers its last member', store.snapshot().groups.find((g) => g.id === group.id)?.lastMemberId === group.members[0].id);
+check('and it is persisted', saved?.groups?.find?.((g) => g.id === group.id)?.lastMemberId === group.members[0].id);
+
 let refused = false;
 try {
   await store.execute({ commandId: newId(), action: 'moveMember', groupId: group.id, memberId: 'missing', toIndex: 0 });

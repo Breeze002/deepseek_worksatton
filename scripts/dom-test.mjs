@@ -1461,6 +1461,139 @@ check(
   JSON.stringify(opened.slice(-1)),
 );
 
+console.log('focus: entering a Session keeps the keyboard in the conversation');
+// Earlier blocks left their own fields around; this scenario is about one conversation plus one
+// right-hand pane, so anything else is removed rather than left to compete with it.
+for (const stray of document.querySelectorAll('textarea, [contenteditable="true"]')) stray.remove();
+const conversation = document.createElement('div');
+conversation.style.overflowY = 'auto';
+Object.defineProperty(conversation, 'clientHeight', { get: () => 600 });
+Object.defineProperty(conversation, 'scrollHeight', { get: () => 3000 });
+conversation.getBoundingClientRect = () => ({ left: 300, top: 120, width: 800, height: 600, right: 1100, bottom: 720 });
+const conversationAnchor = document.createElement('span');
+conversationAnchor.className = 'dsc-reading-anchor';
+conversation.appendChild(conversationAnchor);
+const chatComposer = document.createElement('div');
+chatComposer.setAttribute('contenteditable', 'true');
+// The composer is located by geometry (the shell puts it below the scroller, in its column), so a
+// fake field needs a real box — and being the lowest one in that column is what makes it the winner.
+chatComposer.getBoundingClientRect = () => ({ left: 320, top: 760, width: 760, height: 90, right: 1080, bottom: 850 });
+conversation.appendChild(chatComposer);
+document.body.appendChild(conversation);
+const rightPaneField = document.createElement('input');
+rightPaneField.getBoundingClientRect = () => ({ left: 1160, top: 300, width: 240, height: 30, right: 1400, bottom: 330 });
+document.body.appendChild(rightPaneField);
+
+await React.act(async () => {
+  publishSessions({ 'session-focus-a': { id: 'session-focus-a', retainedBy: { mainView: 1 } } });
+});
+await tick(60);
+await React.act(async () => {
+  publishSessions({ 'session-focus-b': { id: 'session-focus-b', retainedBy: { mainView: 1 } } });
+});
+await tick(80);
+check(
+  'entering a Session while the right pane holds the focus moves it to the composer',
+  document.activeElement === chatComposer,
+  document.activeElement?.tagName ?? 'none',
+);
+
+// …and it must never take the focus away from a reader who is already in the conversation.
+chatComposer.focus();
+await React.act(async () => {
+  publishSessions({ 'session-focus-c': { id: 'session-focus-c', retainedBy: { mainView: 1 } } });
+});
+await tick(80);
+check('a reader already in the conversation keeps the focus', document.activeElement === chatComposer);
+
+// A deliberate click into the right pane is only undone when a *different* Session is entered.
+rightPaneField.focus();
+await tick(60);
+check('an ordinary moment does not steal the focus', document.activeElement === rightPaneField);
+conversation.remove();
+rightPaneField.remove();
+
+console.log('member keys: pressing the current member again does not navigate again');
+await React.act(async () => {
+  publishSessions({ 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 } } });
+});
+await tick(60);
+opened.length = 0;
+// Already in member 1: pressing its key must do nothing at all.
+key(document.body, { key: '1', code: 'Digit1', altKey: true });
+await tick(80);
+check('pressing the key of the member already shown is a no-op', opened.length === 0, JSON.stringify(opened));
+// A different member does navigate…
+key(document.body, { key: '2', code: 'Digit2', altKey: true });
+await tick(80);
+const afterFirstPress = opened.length;
+check('a press for another member enters it', afterFirstPress > 0, JSON.stringify(opened));
+// The real shell then reports that Session as the visible one, which is what makes the next press
+// a no-op: without this the harness would keep claiming the first member is still shown.
+await React.act(async () => {
+  publishSessions({ 'session-bbb': { id: 'session-bbb', retainedBy: { mainView: 1 } } });
+});
+await tick(60);
+// …and pressing that same key again does not re-enter the Session.
+key(document.body, { key: '2', code: 'Digit2', altKey: true });
+await tick(80);
+check(
+  'a repeated press on the same member is a no-op',
+  opened.length === afterFirstPress,
+  `${afterFirstPress} -> ${opened.length}`,
+);
+
+console.log('groups: Space then a digit switches the group');
+// A second group, later in creation order, with one member of its own.
+BOARD.groups.push({
+  id: 'group-two',
+  name: '第二个群',
+  goal: '',
+  archived: false,
+  createdAt: 5,
+  order: 1,
+  lastMemberId: 'm-two',
+  chatSessionId: null,
+  messages: [],
+  members: [{ id: 'm-two', sessionId: 'session-two', alias: '第二位', title: 'two', cwd: '/tmp/two' }],
+});
+await React.act(async () => {
+  publishSessions({ 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 } } });
+});
+await tick(60);
+opened.length = 0;
+key(document.body, { key: ' ', code: 'Space' });
+await tick(20);
+key(document.body, { key: '2', code: 'Digit2' });
+await tick(100);
+check(
+  'space then 2 opens that group\'s remembered member',
+  opened.at(-1) === 'session-two',
+  JSON.stringify(opened),
+);
+
+// The guard that matters most: while a field has the focus the sequence must do nothing at all.
+const typingField = document.createElement('textarea');
+typingField.getBoundingClientRect = () => ({ left: 320, top: 760, width: 760, height: 90, right: 1080, bottom: 850 });
+document.body.appendChild(typingField);
+typingField.focus();
+opened.length = 0;
+key(typingField, { key: ' ', code: 'Space' });
+await tick(20);
+key(typingField, { key: '2', code: 'Digit2' });
+await tick(80);
+check('space then a digit inside a text field is left alone', opened.length === 0, JSON.stringify(opened));
+
+// And the sequence must expire, so a stray space cannot arm it for minutes.
+opened.length = 0;
+key(document.body, { key: ' ', code: 'Space' });
+await tick(900);
+key(document.body, { key: '2', code: 'Digit2' });
+await tick(80);
+check('an expired sequence does nothing', opened.length === 0, JSON.stringify(opened));
+typingField.remove();
+BOARD.groups.pop();
+
 /* ------------------------------------------------------------------ result ------------------ */
 
 console.error = realConsole.error;
