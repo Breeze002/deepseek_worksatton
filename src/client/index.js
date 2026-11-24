@@ -152,7 +152,7 @@ import { PanelBoundary, createPublisher, setReportDiagnostic } from './diagnosti
 // Re-exported so a test binds to the marker slot instead of hard-coding a second copy of the name;
 // the previous copy (`contextMenu.content`) is exactly what made this invisible.
 export { MARKER_SLOT } from './diagnostics.js';
-import { Controller, currentSessionIdOf, describeFollow, followProbe, newCommandId, setController, getController, groupOfSession, latestBoardState, memberOfSession, setGroupChat, setSessionIndex, adoptGroupOfSession, adoptUiState, setActiveGroup, setFocus, setFocusCtx, setNavActions, pushSessionHistory, getCurrentShellSessionId, setCurrentShellSessionId, subscribeCurrentSession, runtimeListeners } from './state.js';
+import { activeGroupHasSession, Controller, currentSessionIdOf, describeFollow, followProbe, newCommandId, setController, getController, groupOfSession, latestBoardState, memberOfSession, setGroupChat, setSessionIndex, adoptGroupOfSession, adoptUiState, setActiveGroup, setFocus, setFocusCtx, setNavActions, pushSessionHistory, getCurrentShellSessionId, setCurrentShellSessionId, subscribeCurrentSession, runtimeListeners } from './state.js';
 import { createKeyboardLayer } from './keyboard.js';
 import { createReadingMemory } from './reading.js';
 import { createGroupChat } from './chat.js';
@@ -289,8 +289,13 @@ export async function apply(ctx) {
   // The panel follows the visible Session; a group switch sets the same value earlier.
   ctx.effect(
     () => subscribeCurrentSession(() => {
-      const owner = groupOfSession(latestBoardState, getCurrentShellSessionId());
-      if (owner !== null) adoptGroupOfSession(owner.group.id);
+      const visibleSession = getCurrentShellSessionId();
+      // Only follow when the group on screen does not already own this Session: a Session can belong to
+      // several groups, and "the first group that has it" is not the one the reader switched to.
+      if (activeGroupHasSession(latestBoardState, visibleSession) !== true) {
+        const owner = groupOfSession(latestBoardState, visibleSession);
+        if (owner !== null) adoptGroupOfSession(owner.group.id);
+      }
     }),
     'session-cards: active group follows the Session',
   );

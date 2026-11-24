@@ -1608,6 +1608,61 @@ check(
   `${afterFirstPress} -> ${opened.length}`,
 );
 
+console.log('groups: a Session shared by two groups keeps the group you switched to');
+// The same Session in two groups: following it back to the first one is wrong, because both own it.
+BOARD.groups.push({
+  id: 'group-shared',
+  name: '共享群',
+  goal: '',
+  archived: false,
+  createdAt: 9,
+  chatSessionId: null,
+  messages: [],
+  members: [{ id: 'm-shared', sessionId: 'session-aaa', alias: '共享', title: 'shared', cwd: '/tmp' }],
+});
+await React.act(async () => {
+  publishSessions({ 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true } });
+});
+const sharedRegion = document.createElement('div');
+sharedRegion.className = 'Mbwy4a_regionArea';
+sharedRegion.getBoundingClientRect = () => ({ left: 12, top: 40, width: 240, height: 500, right: 252, bottom: 540 });
+document.body.appendChild(sharedRegion);
+const sharedHost = document.createElement('div');
+document.body.appendChild(sharedHost);
+const sharedRoot = createRoot(sharedHost);
+await React.act(async () => {
+  sharedRoot.render(React.createElement(iconEntry.component, iconProps));
+});
+const sharedTitle = () => sharedHost.querySelector('.dsc-mp-title')?.textContent ?? '(none)';
+key(document.body, { key: '@', code: 'Digit2', shiftKey: true, ctrlKey: true });
+await tick(160);
+const landed = sharedTitle();
+// Past the guard window, leaving and returning fires the follow rule — it must not drag the panel
+// back to the first group, because the Session belongs to the group that was switched to.
+const realNow = Date.now;
+Date.now = () => realNow() + 4000;
+await React.act(async () => {
+  publishSessions({ 'session-outside': { id: 'session-outside', retainedBy: { mainView: 1 } } });
+});
+await tick(80);
+await React.act(async () => {
+  publishSessions({ 'session-aaa': { id: 'session-aaa', retainedBy: { mainView: 1 }, running: true } });
+});
+await tick(160);
+const stayed = sharedTitle();
+Date.now = realNow;
+check(
+  'the panel stays on the group that was switched to',
+  landed === '共享群' && stayed === '共享群',
+  `landed=${landed} stayed=${stayed}`,
+);
+await React.act(async () => {
+  sharedRoot.unmount();
+});
+sharedRegion.remove();
+sharedHost.remove();
+BOARD.groups.pop();
+
 console.log('groups: Ctrl+Shift plus a digit switches the group');
 // A second group, later in creation order, with one member of its own.
 BOARD.groups.push({

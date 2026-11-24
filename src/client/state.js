@@ -214,7 +214,7 @@ function groupMembersOf(state) {
   const groups = (state.data?.groups ?? []).filter((group) => !group.archived);
   // The Session on screen decides: `Alt+digit` must address the group the reader is looking at, not
   // fall back to the first one (which also dragged the panel back there).
-  const visible = groupOfSession(state, getCurrentShellSessionId())?.group;
+  const visible = groupOfSession(state, getCurrentShellSessionId(), activeGroupId)?.group;
   const group = visible
     ?? groups.find((candidate) => candidate.id === activeGroupId)
     ?? groups.find((candidate) => candidate.id === state.groupId)
@@ -278,17 +278,34 @@ export const setGroupChat = (engine) => {
 export const getGroupChat = () => groupChat;
 
 /** The group a Session belongs to — as a member, or as the group's own chat Session. */
-export function groupOfSession(boardState, sessionId) {
+/**
+ * Which group owns a Session.
+ *
+ * A Session may sit in more than one group, so the caller passes the group it is already working in:
+ * an unqualified "first match" sent the panel back to the first group after a switch.
+ */
+export function groupOfSession(boardState, sessionId, preferGroupId) {
   if (sessionId === undefined || sessionId === null) return null;
+  const matches = [];
   for (const group of boardState?.data?.groups ?? []) {
     if (group.archived === true) continue;
     if (group.chatSessionId !== undefined && group.chatSessionId !== null && group.chatSessionId === sessionId) {
-      return { group, member: null };
+      matches.push({ group, member: null });
+      continue;
     }
     const member = group.members.find((candidate) => candidate.sessionId === sessionId);
-    if (member !== undefined) return { group, member };
+    if (member !== undefined) matches.push({ group, member });
   }
-  return null;
+  return matches.find((match) => match.group.id === preferGroupId) ?? matches[0] ?? null;
+}
+
+/** Whether the group the panel is on already contains this Session (it may contain others too). */
+export function activeGroupHasSession(boardState, sessionId) {
+  if (sessionId === undefined || sessionId === null || activeGroupId === null) return false;
+  const group = (boardState?.data?.groups ?? []).find((candidate) => candidate.id === activeGroupId);
+  if (group === undefined || group.archived === true) return false;
+  if (group.chatSessionId !== undefined && group.chatSessionId !== null && group.chatSessionId === sessionId) return true;
+  return group.members.some((member) => member.sessionId === sessionId);
 }
 
 /** The group member that owns a Session, if any: this is what makes the member list follow it. */

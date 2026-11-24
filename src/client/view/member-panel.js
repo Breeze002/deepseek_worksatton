@@ -48,8 +48,8 @@ function MemberPanel() {
   const [box, setBox] = React.useState(null);
 
   const currentSession = getCurrentShellSessionId();
-  const owner = groupOfSession(state, currentSession);
   const activeGroupId = useActiveGroup();
+  const owner = groupOfSession(state, currentSession, activeGroupId);
   // The cover stays out of an unrelated Session: the group switch also moves that Session, so the
   // two never disagree for longer than the navigation takes.
   const chosen = owner === null ? undefined : orderedGroups(state).find((candidate) => candidate.id === activeGroupId);
