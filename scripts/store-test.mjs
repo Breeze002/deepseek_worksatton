@@ -6,6 +6,7 @@
  *   node scripts/store-test.mjs
  */
 import { CardStore } from '../lib/store.js';
+import { archivedIdsOf, withoutArchived, createArchivedReader } from '../lib/archived.js';
 import { newId } from '../lib/model.js';
 
 let passed = 0;
@@ -13,7 +14,8 @@ const failures = [];
 const check = (label, condition, detail = '') => {
   if (condition) {
     passed += 1;
-    console.log(`  ok   ${label}`);
+    
+console.log(`  ok   ${label}`);
     return;
   }
   failures.push(label);
@@ -126,4 +128,17 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(`  - ${failure}`);
   process.exit(1);
 }
+/* ------------------------------------------------------------------ archived -------------- */
+
+console.log('archived sessions');
+check('the archived ids come out of the workspace store', JSON.stringify(archivedIdsOf({ global: { archivedSessionIds: ['a', 'b'] } })) === '["a","b"]');
+check('a store without the field yields none', archivedIdsOf({ global: {} }).length === 0);
+check('and a malformed value yields none', archivedIdsOf({ global: { archivedSessionIds: 'nope' } }).length === 0);
+const rows = [{ sessionId: 'keep' }, { sessionId: 'gone' }, { id: 'also-gone' }];
+const kept = withoutArchived(rows, new Set(['gone', 'also-gone']));
+check('rows of archived sessions are dropped', kept.length === 1 && kept[0].sessionId === 'keep', JSON.stringify(kept));
+check('with no archived ids every row survives', withoutArchived(rows, new Set()).length === 3);
+const missing = createArchivedReader({ path: '/nonexistent/workspace.json' });
+check('an unreadable store filters nothing', (await missing.read()).size === 0);
+
 console.log(`PASS: ${passed} store checks passed`);

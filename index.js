@@ -15,6 +15,7 @@ import { Service } from '@deepseek-ai/cordis';
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { createArchivedReader, withoutArchived } from './lib/archived.js';
 import { commandSchema, newId, uiStatePatchSchema, uiStateSchema } from './lib/model.js';
 import { remoteInfo } from './lib/rpc.js';
 import { CardStore } from './lib/store.js';
@@ -185,7 +186,13 @@ export default class SessionCardsService extends TypertRemoteService {
 
   /** Real top-level sessions that can become members, grouped by owning Workspace. */
   async _sessionGroups(signal) {
-    const rows = (await this.ctx.get('sessionController').list({}, signal)).items ?? [];
+    const all = (await this.ctx.get('sessionController').list({}, signal)).items ?? [];
+    // A picker must not offer Sessions the Workspace layer has archived; the store is the only place
+    // that knows, and a failure there filters nothing rather than hiding rows.
+    this._archived ??= createArchivedReader();
+    const archived = await this._archived.read();
+    const rows = withoutArchived(all, archived);
+    if (all.length !== rows.length) bootLog(`pickable sessions: ${rows.length} of ${all.length} (archived hidden)`);
     const registry = this.ctx.get('workspaceRegistry');
     let workspaces = [];
     try {
